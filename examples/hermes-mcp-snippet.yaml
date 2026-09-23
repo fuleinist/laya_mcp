@@ -1,0 +1,39 @@
+# Hermes Agent — MCP server entry for laya-mcp.
+# Paste under the top-level `mcp_servers:` key in ~/.hermes/config.yaml (or the
+# AppData equivalent), or let `hermes mcp add` write it for you.
+#
+#   hermes mcp add laya \
+#     --command python \
+#     --args /abs/path/laya_mcp_server.py \
+#     --env LAYA_EXE=/abs/path/laya.exe LAYA_MODEL=/abs/path/laya_multilingual_q8_0.gguf
+#
+# Then verify:  hermes mcp list   /   hermes mcp test laya
+
+mcp_servers:
+  laya:
+    command: python
+    args:
+      - /abs/path/laya_mcp_server.py
+    env:
+      LAYA_EXE: /abs/path/laya.exe
+      # One model, or a directory of them for per-language routing:
+      LAYA_MODEL: /abs/path/laya_multilingual_q8_0.gguf
+      # LAYA_MODELS_DIR: /abs/path/models
+      LAYA_DEVICE: auto
+      LAYA_CUDA_GRAPH: "1"
+      LAYA_TIMEOUT_MS: "30000"
+      # Windows only: the child process needs these to start cleanly.
+      # SystemRoot: C:/Windows
+      # SystemDrive: C:
+    enabled: true
+    # First load reads the GGUF from disk; do not let a cold start look like a failure.
+    connect_timeout: 90
+
+# Cron note: a job reaches MCP tools only if its `enabled_toolsets` allows them. An MCP server
+# name is usable as a toolset name:
+#
+#   jobs:
+#     - id: guard-daily
+#       enabled_toolsets: ["terminal", "web", "laya"]
+#
+# A job pinned to ["terminal", "web"] gets NO MCP tools and must call the binary directly.

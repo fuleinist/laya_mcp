@@ -1,0 +1,18 @@
+# Local artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Model weights and binaries never belong in git (hundreds of MB)
+*.gguf
+*.exe
+*.zip
+laya
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

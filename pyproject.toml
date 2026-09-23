@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "laya-mcp"
+version = "0.1.0"
+description = "MCP server exposing the Laya System-1 decision engine (Jev) as agent tools"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "fuleinist" }]
+keywords = ["mcp", "model-context-protocol", "laya", "jev", "system-1", "decision-model", "agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["mcp>=2.0.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/fuleinist/laya_mcp"
+Upstream = "https://github.com/NandhaKishorM/laya"
+Compiler = "https://github.com/monatis/ggmlc"
+Weights = "https://huggingface.co/mys/laya-multilingual-GGUF"
+
+[project.scripts]
+laya-mcp = "laya_mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+py-modules = ["laya_mcp_server"]

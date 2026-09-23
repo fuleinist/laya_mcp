@@ -1,0 +1,18 @@
+{
+  "_comment": "OpenClaw — merge this into mcp.servers in ~/.openclaw/openclaw.json, then run: openclaw mcp list",
+  "mcp": {
+    "servers": {
+      "laya": {
+        "command": "python",
+        "args": ["/abs/path/laya_mcp_server.py"],
+        "env": {
+          "LAYA_EXE": "/abs/path/laya.exe",
+          "LAYA_MODEL": "/abs/path/laya_multilingual_q8_0.gguf",
+          "LAYA_DEVICE": "auto",
+          "LAYA_CUDA_GRAPH": "1",
+          "LAYA_TIMEOUT_MS": "30000"
+        }
+      }
+    }
+  }
+}
