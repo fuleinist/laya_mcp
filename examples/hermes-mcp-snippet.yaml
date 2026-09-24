@@ -21,6 +21,11 @@ mcp_servers:
       # LAYA_MODELS_DIR: /abs/path/models
       LAYA_DEVICE: auto
       LAYA_CUDA_GRAPH: "1"
+      # Optional browser-agent backend: enables laya_browser_act. Without LAYA_BROWSER_DIR
+      # the tool is present but returns a one-line error naming this variable.
+      # LAYA_BROWSER_DIR: /abs/path/laya-browser/v10s
+      # LAYA_BROWSER_PYTHON: /abs/path/.venv/Scripts/python.exe
+      # LAYA_BROWSER_DEVICE: cuda
       LAYA_TIMEOUT_MS: "30000"
       # Windows only: the child process needs these to start cleanly.
       # SystemRoot: C:/Windows

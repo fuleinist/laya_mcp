@@ -31,7 +31,22 @@ Environment
   LAYA_CUDA_GRAPH  "1" to capture a CUDA graph for the live shape     (default: 1)
   LAYA_TIMEOUT_MS  per-call timeout in ms                             (default: 30000)
 
-Run `laya-mcp --check` to validate the configuration end to end without an agent.
+Browser backend (optional — enables `laya_browser_act`)
+------------------------------------------------------
+The browser-agent checkpoint (cklxx/laya-browser, an RL fine-tune of the same architecture) is a
+safetensors/torch artifact, so it cannot be served by the ggmlc binary above. It runs in the
+Python SDK's own virtualenv as a second, lazily-started worker process.
+
+  LAYA_BROWSER_DIR       checkpoint directory holding model.safetensors + encoder/ + tokenizer/
+  LAYA_BROWSER_PYTHON    python of the SDK venv (torch + `laya`). Guessed from LAYA_BROWSER_DIR
+                         as <dir>/../.venv/Scripts/python.exe when unset.
+  LAYA_BROWSER_DEVICE    auto | cpu | cuda | cuda:1                     (default: cuda)
+  LAYA_BROWSER_TIMEOUT_MS  per-call timeout in ms (default: 300000 — the first call after a cold
+                         start pays a ~12-16 s checkpoint load, charged against this budget)
+  LAYA_BROWSER_READY_MS  startup budget for the load handshake          (default: 300000)
+
+Run `laya-mcp --check` to validate the ggmlc configuration end to end without an agent, and
+`laya-mcp --check-browser` to load the browser checkpoint and make one real decision.
 """
 
 from __future__ import annotations
@@ -48,7 +63,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 PRESETS = ("email", "triage", "guard", "moderation", "router", "expense", "security",
            "invoice", "customer_service", "harness")
@@ -76,16 +91,45 @@ DEVICE = os.environ.get("LAYA_DEVICE", "auto").strip() or "auto"
 TIMEOUT_MS = int(os.environ.get("LAYA_TIMEOUT_MS", "30000"))
 CUDA_GRAPH = os.environ.get("LAYA_CUDA_GRAPH", "1").strip() not in ("0", "", "false", "False")
 
+BROWSER_DIR = os.environ.get("LAYA_BROWSER_DIR", "").strip()
+BROWSER_DEVICE = os.environ.get("LAYA_BROWSER_DEVICE", "cuda").strip() or "cuda"
+BROWSER_TIMEOUT_MS = int(os.environ.get("LAYA_BROWSER_TIMEOUT_MS", "300000"))
+BROWSER_READY_MS = int(os.environ.get("LAYA_BROWSER_READY_MS", "300000"))
+WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "laya_browser_worker.py")
+# The checkpoint's head budget is `head_max_len` (768 in rl_agent_config.json) shared by all
+# option markers; the release's own sample request offers 58 candidates in one question. Past
+# that, split the page into regions and ask per region rather than sending one huge choice.
+MAX_BROWSER_ELEMENTS = 96
+
+
+def _find_browser_python() -> str:
+    """LAYA_BROWSER_PYTHON, else the SDK venv sitting beside the checkpoint tree."""
+    explicit = os.environ.get("LAYA_BROWSER_PYTHON", "").strip()
+    if explicit:
+        return explicit
+    if BROWSER_DIR:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(BROWSER_DIR)))
+        for parts in (("Scripts", "python.exe"), ("bin", "python")):
+            candidate = os.path.join(base, ".venv", *parts)
+            if os.path.exists(candidate):
+                return candidate
+    return ""
+
+
+BROWSER_PYTHON = _find_browser_python()
+
 
 class LayaDaemon:
     """Serialized client for `laya daemon` (strict request/response FIFO)."""
 
-    def __init__(self) -> None:
+    def __init__(self, timeout_ms: int | None = None, readiness_ms: int | None = None) -> None:
         self._proc: subprocess.Popen | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._lock = threading.Lock()
         self._calls = 0
         self._started_at: float | None = None
+        self.timeout_ms = timeout_ms or TIMEOUT_MS
+        self.readiness_ms = readiness_ms or TIMEOUT_MS
 
     # ---- lifecycle -------------------------------------------------------
     def _argv(self) -> list[str]:
@@ -142,7 +186,7 @@ class LayaDaemon:
         threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
         # Consume the one-shot readiness line; surface boot failures instead of hanging until
         # the caller's timeout expires on a dead child.
-        deadline = time.time() + TIMEOUT_MS / 1000
+        deadline = time.time() + self.readiness_ms / 1000
         while time.time() < deadline:
             try:
                 line = self._lines.get(timeout=1.0)
@@ -191,7 +235,7 @@ class LayaDaemon:
             return obj
 
     def call(self, payload: dict[str, Any], timeout_ms: int | None = None) -> dict[str, Any]:
-        timeout_s = (timeout_ms or TIMEOUT_MS) / 1000
+        timeout_s = (timeout_ms or self.timeout_ms) / 1000
         # The lock is what makes FIFO hold: the daemon answers in request order, so a second
         # in-flight request would read the first one's answer.
         with self._lock:
@@ -212,7 +256,64 @@ class LayaDaemon:
             "family": FAMILY,
             "device": DEVICE,
             "cuda_graph": CUDA_GRAPH,
-            "timeout_ms": TIMEOUT_MS,
+            "timeout_ms": self.timeout_ms,
+            "running": bool(proc and proc.poll() is None),
+            "uptime_s": round(time.time() - self._started_at, 1) if self._started_at else None,
+            "calls": self._calls,
+        }
+
+
+class LayaBrowser(LayaDaemon):
+    """Serialized client for the browser-agent worker.
+
+    Same FIFO protocol as the ggmlc daemon, different child process: the browser checkpoint is a
+    safetensors RL agent and needs torch, so its work runs in the SDK's own virtualenv while this
+    server stays torch-free. Starting it costs a checkpoint load (~12-16 s, ~1.6 GB VRAM on an RTX
+    3090), so nothing starts it implicitly — `laya_health` reports whether it is configured and
+    whether it is running, and only a `laya_browser_act` call actually loads it.
+    """
+
+    def _argv(self) -> list[str]:
+        # -I so the worker cannot pick up this server's environment or user site-packages.
+        return [BROWSER_PYTHON, "-I", WORKER_PATH]
+
+    def _config_error(self) -> str | None:
+        if not BROWSER_DIR:
+            return (
+                "browser backend not configured: set LAYA_BROWSER_DIR to the browser-agent\n"
+                "checkpoint directory (the one holding model.safetensors + encoder/ + tokenizer/).\n"
+                "Get one with:\n"
+                "  huggingface-cli download cklxx/laya-browser --local-dir laya-browser"
+            )
+        if not os.path.isdir(BROWSER_DIR):
+            return f"LAYA_BROWSER_DIR is not a directory: {BROWSER_DIR}"
+        if not os.path.exists(os.path.join(BROWSER_DIR, "model.safetensors")):
+            return (
+                f"no model.safetensors in {BROWSER_DIR} — point LAYA_BROWSER_DIR at the checkpoint\n"
+                "root (the directory that also holds encoder/ and rl_agent_config.json)"
+            )
+        if not BROWSER_PYTHON or not (os.path.exists(BROWSER_PYTHON) or shutil.which(BROWSER_PYTHON)):
+            return (
+                f"browser SDK python not found: {BROWSER_PYTHON or '(unset)'}. Install the SDK into its\n"
+                "own venv (it needs torch, which this server does not) and set LAYA_BROWSER_PYTHON:\n"
+                "  uv venv .venv --python 3.12\n"
+                "  uv pip install --python .venv/Scripts/python.exe laya torch   # .venv/bin/python on POSIX"
+            )
+        if not os.path.exists(WORKER_PATH):
+            return f"worker script missing: {WORKER_PATH}"
+        return None
+
+    def health(self) -> dict[str, Any]:
+        """Configured/running state, without paying the checkpoint load to find out."""
+        proc = self._proc
+        return {
+            "backend": "browser",
+            "configured": self._config_error() is None,
+            "checkpoint": BROWSER_DIR or None,
+            "python": BROWSER_PYTHON or None,
+            "worker": WORKER_PATH,
+            "device": BROWSER_DEVICE,
+            "timeout_ms": self.timeout_ms,
             "running": bool(proc and proc.poll() is None),
             "uptime_s": round(time.time() - self._started_at, 1) if self._started_at else None,
             "calls": self._calls,
@@ -220,6 +321,7 @@ class LayaDaemon:
 
 
 DAEMON = LayaDaemon()
+BROWSER = LayaBrowser(timeout_ms=BROWSER_TIMEOUT_MS, readiness_ms=BROWSER_READY_MS)
 mcp = MCPServer(
     name="laya",
     version=__version__,
@@ -227,7 +329,10 @@ mcp = MCPServer(
         "Local Laya System-1 decision engine: typed questions (choice/score/noul) answered in one "
         "encoder pass in ~10-20 ms, returning probabilities and an act/escalate signal. It never "
         "generates text. Use it to screen untrusted text before it enters context, to route or "
-        "triage at near-zero cost, and to gate actions on a confidence number instead of a vibe."
+        "triage at near-zero cost, and to gate actions on a confidence number instead of a vibe. "
+        "When the browser backend is configured (LAYA_BROWSER_DIR), laya_browser_act answers "
+        "browser-agent questions instead — which operation comes next and which observed element "
+        "to act on — from the browser checkpoint."
     ),
 )
 
@@ -265,6 +370,69 @@ def _fmt(result: dict[str, Any]) -> str:
             lines.append(f"{name}: {a.get('score', 0):.3f} on {len(a.get('legend') or {})} levels")
     head = "; ".join(lines) if lines else "(no answers)"
     return json.dumps({"summary": head, **result}, ensure_ascii=False, indent=2)
+
+
+def _browser_payload(goal: str, elements: list, page_text: str = "", page_url: str = "",
+                     page_title: str = "", recent_actions: list | None = None,
+                     text_fields: list | None = None, rules: str | None = None) -> dict[str, Any]:
+    """Validate one browser decision and normalize it into the worker's request shape."""
+    if not (goal or "").strip():
+        raise ValueError(
+            "goal is required: state the whole task, not just the next step — the checkpoint is "
+            "trained to advance the entire goal from the CURRENT page, so a step-sized goal loses "
+            "the 'do not repeat satisfied steps' behaviour it was fine-tuned for"
+        )
+    if not elements:
+        raise ValueError(
+            "elements is required: pass the interactable elements you observed, in the order you "
+            "will index them — the model answers with one of these indexes, so the numbering is "
+            "yours to keep"
+        )
+    if len(elements) > MAX_BROWSER_ELEMENTS:
+        raise ValueError(
+            f"{len(elements)} candidate elements; keep a single call under {MAX_BROWSER_ELEMENTS} "
+            "(every option shares the checkpoint's 768-token head budget). Split the page into "
+            "regions and ask per region instead of sending one huge choice"
+        )
+    normalized = []
+    for element in elements:
+        if isinstance(element, dict):
+            normalized.append({
+                "label": str(element.get("label") or element.get("text") or element.get("name") or ""),
+                "role": str(element.get("role") or element.get("tag") or ""),
+            })
+        else:
+            normalized.append({"label": str(element), "role": ""})
+    request: dict[str, Any] = {
+        "goal": goal,
+        "page": {"url": page_url or "", "title": page_title or "", "text": page_text or ""},
+        "recent_actions": list(recent_actions or []),
+        "elements": normalized,
+    }
+    if text_fields:
+        request["text_fields"] = [int(i) for i in text_fields]
+    if rules:
+        request["rules"] = rules
+    return request
+
+
+def _fmt_browser(result: dict[str, Any]) -> str:
+    if "error" in result:
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    operation = result.get("operation") or {}
+    probs = operation.get("probabilities") or {}
+    top = sorted(probs.items(), key=lambda kv: -kv[1])[:3]
+    parts = [f"{operation.get('choice')} (conf {operation.get('confidence') or 0:.3f})"]
+    if top:
+        parts.append("/".join(f"{k} {v:.3f}" for k, v in top))
+    target = result.get("target")
+    if target:
+        parts.append(f"target [{result.get('target_id')}] by {result.get('target_of')} "
+                     f"(conf {target.get('confidence') or 0:.3f}, "
+                     f"of {result.get('elements_offered')} offered)")
+    else:
+        parts.append(f"no target ({result.get('target_of') or 'operation needs none'})")
+    return json.dumps({"summary": "; ".join(parts), **result}, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -355,10 +523,32 @@ def laya_classify(items: list[str], catalog: dict[str, str],
 
 @mcp.tool(
     description=(
+        "Choose the NEXT browser operation (CLICK, TYPE_TEXT, SCROLL_DOWN, WAIT, DONE, BLOCKED) and "
+        "which observed element to act on, in one forward pass over the browser-agent checkpoint: "
+        "pass the whole task as `goal`, the page's text, and your candidate elements in the order "
+        "you will index them. Returns the operation with probabilities plus the chosen element index "
+        "(~90 ms warm, no text generation, no API cost). Use it once per browser step instead of "
+        "asking an LLM to pick a selector; a low confidence is a reason to re-observe or hand off, "
+        "not to act. Requires LAYA_BROWSER_DIR to be configured — call laya_health to check."
+    )
+)
+def laya_browser_act(goal: str, elements: list, page_text: str = "", page_url: str = "",
+                     page_title: str = "", recent_actions: list | None = None,
+                     text_fields: list | None = None, rules: str | None = None,
+                     timeout_ms: int | None = None) -> str:
+    """One browser decision: what to do next, and to which element."""
+    payload = _browser_payload(goal, elements, page_text, page_url, page_title,
+                               recent_actions, text_fields, rules)
+    return _fmt_browser(BROWSER.call(payload, timeout_ms))
+
+
+@mcp.tool(
+    description=(
         "Report and PROBE the Laya backend: `reachable` says whether the engine answers (starting "
         "it if needed), plus executable, loaded model/family, device, CUDA-graph status, timeout, "
         "uptime and call count. Use when another tool times out or returns a daemon error; a "
-        "`reachable: false` result carries the underlying error."
+        "`reachable: false` result carries the underlying error. Also reports the optional browser "
+        "backend (`browser.configured` / `browser.running`) without loading its checkpoint."
     )
 )
 def laya_health() -> str:
@@ -369,9 +559,11 @@ def laya_health() -> str:
         state = DAEMON.health()
         state["reachable"] = False
         state["error"] = f"{type(exc).__name__}: {exc}"
+        state["browser"] = BROWSER.health()
         return json.dumps(state, ensure_ascii=False, indent=2)
     state = DAEMON.health()
     state["reachable"] = True
+    state["browser"] = BROWSER.health()
     return json.dumps(state, ensure_ascii=False, indent=2)
 
 
@@ -412,14 +604,55 @@ def _check() -> int:
     return 0
 
 
+def _check_browser() -> int:
+    """Load the browser checkpoint and make one real decision — no agent required."""
+    print(f"laya-mcp {__version__} (browser backend)")
+    rows = (("LAYA_BROWSER_DIR", BROWSER_DIR), ("LAYA_BROWSER_PYTHON", BROWSER_PYTHON),
+            ("LAYA_BROWSER_DEVICE", BROWSER_DEVICE),
+            ("LAYA_BROWSER_TIMEOUT_MS", BROWSER_TIMEOUT_MS), ("worker", WORKER_PATH))
+    for name, value in rows:
+        print(f"  {name:23s} = {value!r}")
+    problem = BROWSER._config_error()
+    if problem:
+        print(f"\nFAILED: {problem}", file=sys.stderr)
+        return 2
+    try:
+        t0 = time.time()
+        BROWSER.start()
+        load = time.time() - t0
+        t0 = time.time()
+        out = BROWSER.call(_browser_payload(
+            goal="Search Wikipedia for 'Python programming language' and open the article about "
+                 "the Python language.",
+            elements=[{"label": "Wikipedia The Free Encyclopedia", "role": "link"},
+                      {"label": "Open Search Wikipedia", "role": "searchbox"},
+                      {"label": "Search", "role": "button"}],
+            page_text="Wikipedia — The Free Encyclopedia. From today's featured article: ...",
+            page_url="https://en.wikipedia.org/wiki/Main_Page",
+            page_title="Wikipedia, the free encyclopedia",
+        ))
+        call = (time.time() - t0) * 1000
+    except Exception as exc:
+        print(f"\nFAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+    print(f"\nOK  browser backend answered (load {load:.1f} s, call {call:.0f} ms)")
+    print(_fmt_browser(out))
+    print("\nNote: the load is once per server process (~12-16 s for 615 MB of safetensors); warm "
+          "decisions are tens of milliseconds. VRAM held while loaded: ~1.6 GB.")
+    BROWSER.stop()
+    return 0
+
+
 def main() -> int:
     if "--check" in sys.argv[1:]:
         return _check()
+    if "--check-browser" in sys.argv[1:]:
+        return _check_browser()
     if "--version" in sys.argv[1:]:
         print(__version__)
         return 0
     if sys.argv[1:]:
-        print(f"usage: {os.path.basename(sys.argv[0])} [--check|--version]\n"
+        print(f"usage: {os.path.basename(sys.argv[0])} [--check|--check-browser|--version]\n"
               "  (no arguments = run the MCP server on stdio, as an MCP client expects)",
               file=sys.stderr)
         return 1
@@ -434,6 +667,7 @@ def main() -> int:
         raise
     finally:
         DAEMON.stop()
+        BROWSER.stop()
     return 0
 
 
