@@ -372,9 +372,11 @@ transport. Model: 345 MB on disk, ~260 MiB VRAM resident (the PyTorch path costs
   from wedging the agent.
 - **Validation is client-side** because the daemon degrades unknown question types to an empty
   `choice` silently — a worse failure than a loud error.
-- **Seven tools**, not thirty, for tool-selection quality. Each addition has to earn its
-  place: `route_step` did, because it is the measured router, and every description says what its
-  tool is *not* for.
+- **Eight tools**, not thirty, for tool-selection quality. Each addition has to earn its place:
+  `route_step` did, because it is the measured router; `verify_step` did, because a typed reading of
+  an accessibility diff is the only way to ask "did that step work?" without handing a planner 12k
+  tokens of screen text — and every description says what its tool is *not* for, including how
+  accurate its answers have been measured to be.
 
 ## Credits and license
 
