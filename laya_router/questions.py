@@ -105,6 +105,40 @@ def tier_options(schema: dict[str, Any]) -> list[str]:
     return list(schema["questions"][TIER]["criteria"])
 
 
+def render_answers_prompt(questions: dict[str, Any], state: dict[str, Any],
+                          state_hint: str = "") -> str:
+    """A schema-driven prompt for arbitrary questions, for a chat backend.
+
+    The routing prompt above states one hard-coded story; this one carries the question text and the
+    closed answer space, which is all a chat backend needs to answer the same questions the daemon
+    answers — used by `verify_step`, where the questions are generated per diff.
+    """
+    lines = []
+    if state_hint:
+        lines += [state_hint, ""]
+    lines.append("State:")
+    for key, value in state.items():
+        lines.append(f"{key}:")
+        lines.append(str(value).strip())
+    lines += ["", "Questions:"]
+    for name, q in questions.items():
+        line = f"- {name} ({q['type']}): {q.get('instructions', '')}"
+        lines.append(line)
+        for option, description in (q.get("criteria") or {}).items():
+            lines.append(f"    - {option}: {description}")
+    lines += ["", "Reply with ONE JSON object and nothing else, mapping each question id to its answer."]
+    lines.append("The noul questions take true or false; a choice question takes exactly one of its "
+                 "criteria keys.")
+    example = {}
+    for name, q in questions.items():
+        if q["type"] == "noul":
+            example[name] = True
+        elif q.get("criteria"):
+            example[name] = next(iter(q["criteria"]))
+    lines.append(f"Example shape: {json.dumps(example)}")
+    return "\n".join(lines)
+
+
 def render_prompt(schema: dict[str, Any], state: dict[str, Any]) -> str:
     """The same schema, as text, for a chat backend.
 

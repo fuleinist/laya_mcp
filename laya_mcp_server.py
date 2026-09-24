@@ -353,21 +353,24 @@ def laya_classify(items: list[str], catalog: dict[str, str],
     return _fmt(DAEMON.call(_payload(state, questions), timeout_ms))
 
 
-def _router_module():
-    """Import `laya_router` lazily.
+def _router_module(*names: str):
+    """Import `laya_router` submodules lazily.
 
     The server still works if it is missing (the six engine-backed tools do not depend on it), so
     the import failure is reported as advice on the one tool that needs it rather than as an
     import-time crash that would take the whole MCP server down.
     """
+    import importlib
+
+    wanted = names or ("backends", "questions")
     try:
-        from laya_router import backends as rbackends, questions as rquestions
+        modules = [importlib.import_module(f"laya_router.{name}") for name in wanted]
     except Exception as exc:  # pragma: no cover - import environment dependent
         raise RuntimeError(
-            "route_step needs the laya_router package, which ships in this repo next to "
+            "this tool needs the laya_router package, which ships in this repo next to "
             f"laya_mcp_server.py. Import failed: {type(exc).__name__}: {exc}"
         ) from exc
-    return rbackends, rquestions
+    return modules[0] if len(modules) == 1 else tuple(modules)
 
 
 @mcp.tool(
@@ -421,6 +424,75 @@ def route_step(task: str, context: str | None = None, backend: str = "laya",
         "measured": (
             "tier accuracy and the paired comparison against a hosted model are in "
             "docs/router-service.md; sensitive precision is 0.208, so do not gate on it"
+        ),
+    }
+    return json.dumps(body, ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
+    description=(
+        "Verify a step from an accessibility diff: give the accessibility capture before and after "
+        "the action, and get typed answers (yes/no, or one of a closed set) about what the screen "
+        "now shows — did an element appear, is this role still there, is there an error, did more "
+        "appear than disappear. The screen text never comes back as prose, only as typed values, so "
+        "nothing on screen can reach you as an instruction. MEASURED AT 0.602 ACCURACY against a "
+        "0.569 majority-class baseline on 103 real diffs (docs/verify-step.md): treat the answers as "
+        "advisory evidence with a known error rate, never as the gate that decides a step is done. "
+        "Ask few questions per call — the encoder's cost is state x questions."
+    )
+)
+def verify_step(before: str, after: str, backend: str = "laya", max_lines: int = 40,
+                timeout_ms: int | None = None) -> str:
+    """Typed answers about an accessibility diff — `before`/`after` are cua-driver `mode='ax'` captures."""
+    rbackends = _router_module("backends")
+    ra11y = _router_module("a11y")
+    before_capture = ra11y.parse_capture(before)
+    after_capture = ra11y.parse_capture(after)
+    diff_result = ra11y.diff(before_capture, after_capture, max_lines=max_lines)
+    items = ra11y.build_questions({"app": after_capture["app"], "before": before_capture,
+                                  "after": after_capture}, diff_result)
+    templates = ra11y.load_templates()
+
+    if backend == "laya":
+        chosen = rbackends.LayaBackend(daemon=DAEMON)  # reuse this server's daemon child
+    elif backend == "frontier":
+        registry = rbackends.default_registry()
+        if "frontier" not in registry:
+            raise ValueError(
+                "no frontier backend is configured. Set "
+                "LAYA_ROUTER_FRONTIER='openai:<base_url>|<model>|<KEY_ENV>' in this server's "
+                "environment, or call the HTTP service (laya_router.service)"
+            )
+        chosen = registry["frontier"]
+    else:
+        raise ValueError(f"backend must be 'laya' or 'frontier'; got {backend!r}")
+
+    decision = chosen.answer({"diff": diff_result["text"]}, ra11y.to_laya_questions(items),
+                             (timeout_ms or TIMEOUT_MS) / 1000,
+                             state_hint=templates.get("state_hint", ""))
+    if not decision.answered:
+        # Same rule as route_step: a silent empty answer would read as "nothing changed".
+        raise RuntimeError(
+            f"{chosen.name} could not answer the verification questions: "
+            f"{decision.error or 'unknown error'}"
+        )
+    body = {
+        "answers": ra11y.answer_details(decision),
+        "diff": {"lines": diff_result["lines"], "chars": diff_result["chars"],
+                 "truncated": diff_result["truncated"],
+                 "elements_before": diff_result["elements_before"],
+                 "elements_after": diff_result["elements_after"]},
+        "schema_version": templates["schema_version"],
+        "backend": chosen.name,
+        "advisory": True,
+        "measured": (
+            "0.602 overall on 103 real diffs (majority-class baseline 0.569 on the largest question "
+            "kind; 0.621 present, 0.600 error_present against a 0.733 baseline) — see "
+            "docs/verify-step.md. Do not gate a step on these answers."
+        ),
+        "boundary": (
+            "the diff is text from the accessibility tree only: an action that changed pixels "
+            "without changing the tree is invisible here (docs/computer-use.md section 6)"
         ),
     }
     return json.dumps(body, ensure_ascii=False, indent=2)

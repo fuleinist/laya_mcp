@@ -69,6 +69,16 @@ class Backend:
     def route(self, state: dict[str, Any], schema: dict[str, Any], timeout_s: float = 60.0) -> Decision:
         raise NotImplementedError
 
+    def answer(self, state: dict[str, Any], questions: dict[str, Any],
+               timeout_s: float = 60.0, state_hint: str = "") -> Decision:
+        """Answer arbitrary schema questions about `state` — step 3's `verify_step` path.
+
+        `route()` is the routing specialisation; this is the general one, and both backends normalise
+        into the daemon's answer shape (`{id: {"type": ..., "noul"|"choice": ...}}` in `Decision.raw`)
+        so one parser reads either backend and a paired comparison compares answers, not parsers.
+        """
+        raise NotImplementedError
+
     def health(self) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -145,6 +155,28 @@ class LayaBackend(Backend):
             decision.answered = False
             decision.error = "daemon returned no usable tier probability"
         return decision
+
+    def answer(self, state: dict[str, Any], questions: dict[str, Any],
+               timeout_s: float = 60.0, state_hint: str = "") -> Decision:
+        """One daemon call with arbitrary questions; the daemon's answer shape passes through."""
+        payload = {"state": state, "questions": questions}
+        t0 = time.perf_counter()
+        try:
+            out = self.daemon.call(payload, timeout_ms=int(timeout_s * 1000))
+        except Exception as exc:
+            return Decision(backend=self.name, answered=False,
+                            latency_ms=(time.perf_counter() - t0) * 1000,
+                            error=f"{type(exc).__name__}: {exc}")
+        usage = out.get("usage") or {}
+        latency = usage.get("latency_ms") or (time.perf_counter() - t0) * 1000
+        if out.get("error") and "answers" not in out:
+            return Decision(backend=self.name, answered=False, latency_ms=latency,
+                            error=str(out["error"]), raw=out)
+        answers = out.get("answers") or {}
+        return Decision(backend=self.name, answered=bool(answers), latency_ms=latency, raw=out,
+                        input_tokens=usage.get("input_tokens"),
+                        output_tokens=usage.get("output_tokens"),
+                        error=None if answers else "daemon returned no answers")
 
 
 class OpenAICompatBackend(Backend):
@@ -252,6 +284,94 @@ class OpenAICompatBackend(Backend):
                 setattr(decision, flag, value)
                 setattr(decision, f"{flag}_prob", 1.0 if value else 0.0)
         return decision
+
+    def answer(self, state: dict[str, Any], questions: dict[str, Any],
+               timeout_s: float = 60.0, state_hint: str = "") -> Decision:
+        """Answer arbitrary questions over a chat endpoint, normalised into the daemon's shape.
+
+        A chat backend has no typed output channel: it is asked for one JSON object and its values
+        are mapped onto the same answer space, question by question. A question the reply does not
+        answer usefully is left out rather than guessed — `missing` in `raw` names it.
+        """
+        prompt = Q.render_answers_prompt(questions, state, state_hint)
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system",
+                 "content": "You answer typed questions about a state. You reply with a single JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        t0 = time.perf_counter()
+        try:
+            out = self._post(body, timeout_s)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            return Decision(backend=self.name, answered=False,
+                            latency_ms=(time.perf_counter() - t0) * 1000,
+                            error=f"HTTP {exc.code}: {detail}")
+        except Exception as exc:
+            return Decision(backend=self.name, answered=False,
+                            latency_ms=(time.perf_counter() - t0) * 1000,
+                            error=f"{type(exc).__name__}: {exc}")
+        usage = out.get("usage") or {}
+        decision = Decision(backend=self.name, latency_ms=(time.perf_counter() - t0) * 1000, raw=out,
+                            input_tokens=usage.get("prompt_tokens"),
+                            output_tokens=usage.get("completion_tokens"))
+        try:
+            text = out["choices"][0]["message"]["content"]
+        except Exception as exc:
+            decision.answered = False
+            decision.error = f"no message content in the reply: {exc}"
+            return decision
+        try:
+            parsed = parse_json_object(text)
+        except ValueError as exc:
+            decision.answered = False
+            decision.error = f"unparseable reply: {exc}"
+            return decision
+
+        answers, missing = normalise_answers(questions, parsed)
+        decision.answered = bool(answers)
+        decision.raw = {"answers": answers, "missing": missing, "text": text[:2000],
+                        "usage": usage, "model": self.model}
+        decision.error = None if not missing else f"no usable answer for {', '.join(missing)}"
+        return decision
+
+
+def normalise_answers(questions: dict[str, Any], parsed: dict[str, Any]
+                      ) -> tuple[dict[str, Any], list[str]]:
+    """Map a chat backend's JSON values onto the daemon's answer shape.
+
+    Returns `(answers, missing)`: `answers` is `{id: {"type": ..., "noul"|"choice": ...}}`, identical
+    to what the daemon produces, and `missing` lists the questions the reply did not answer in the
+    question's own answer space. Loose reads are accepted (a `true` string, a differently-cased
+    choice) because the mapping has to be *closed* to be safe, not strict.
+    """
+    answers: dict[str, Any] = {}
+    missing: list[str] = []
+    for name, q in questions.items():
+        value = parsed.get(name)
+        if q["type"] == "noul":
+            if isinstance(value, bool):
+                answers[name] = {"type": "noul", "noul": 1.0 if value else 0.0}
+            elif isinstance(value, str) and value.strip().lower() in ("true", "false", "yes", "no"):
+                answers[name] = {"type": "noul",
+                                 "noul": 1.0 if value.strip().lower() in ("true", "yes") else 0.0}
+            else:
+                missing.append(name)
+        elif q["type"] == "choice":
+            options = {str(k).strip().lower(): k for k in (q.get("criteria") or {})}
+            key = str(value).strip().lower() if value is not None else ""
+            if key in options:
+                answers[name] = {"type": "choice", "choice": options[key]}
+            else:
+                missing.append(name)
+        else:
+            missing.append(name)
+    return answers, missing
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

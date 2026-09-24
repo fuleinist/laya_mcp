@@ -187,6 +187,25 @@ def _fake_daemon(monkeypatch, reply=None, exc=None):
     return seen
 
 
+
+def _break_router_import(monkeypatch):
+    """Make `import laya_router*` fail.
+
+    `sys.modules["laya_router"] = None` is not enough: the package is already imported by the time
+    these tests run, and importlib hands back the cached module without consulting the parent.
+    """
+    import importlib
+
+    real = importlib.import_module
+
+    def boom(name, *args, **kwargs):
+        if name.startswith("laya_router"):
+            raise ImportError(f"no module named {name!r}")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", boom)
+
+
 def test_route_step_answers_the_shared_schema(monkeypatch):
     """One tool, one schema: the decision, its probabilities, the schema digest and the caveats."""
     import laya_mcp_server as srv
@@ -239,11 +258,9 @@ def test_route_step_raises_rather_than_returning_a_null_tier(monkeypatch):
 
 
 def test_route_step_names_the_missing_package(monkeypatch):
-    import sys
-
     import laya_mcp_server as srv
 
-    monkeypatch.setitem(sys.modules, "laya_router", None)  # makes `import laya_router` fail
+    _break_router_import(monkeypatch)
     with pytest.raises(RuntimeError, match="laya_router"):
         srv.route_step("a task")
 
@@ -288,3 +305,155 @@ def test_live_route_step_returns_a_tier_and_its_probability():
     assert out["tier"] in {"economy", "frontier"}
     assert 0.0 <= out["tier_prob"] <= 1.0
     assert out["schema_digest"] and out["advisory"] is True
+
+
+# --- verify_step: the MCP surface of step 3 (issue #3) ----------------------
+
+BEFORE_CAPTURE = {"app": "test.exe", "window_title": "test window", "elements": [
+    {"role": "Button", "label": "Refresh", "bounds": [0, 0, 8, 8]},
+    {"role": "Text", "label": "Ready", "bounds": [0, 8, 8, 8]},
+    {"role": "Text", "label": "3 items", "bounds": [0, 16, 8, 8]},
+    {"role": "MenuItem", "label": "Export", "bounds": [0, 24, 8, 8]},
+]}
+AFTER_CAPTURE = {"app": "test.exe", "window_title": "test window", "elements": [
+    {"role": "Button", "label": "Refresh", "bounds": [0, 0, 8, 8]},
+    {"role": "Text", "label": "Ready", "bounds": [0, 8, 8, 8]},
+    {"role": "Text", "label": "Error while saving the file", "bounds": [0, 16, 8, 8]},
+    {"role": "MenuItem", "label": "Export", "bounds": [0, 24, 8, 8]},
+]}
+VERIFY_REPLY = {
+    "answers": {
+        "present_00": {"type": "noul", "noul": 0.812},
+        "present_01": {"type": "noul", "noul": 0.204},
+        "role_present_02": {"type": "noul", "noul": 0.640},
+        "error_present_03": {"type": "noul", "noul": 0.733},
+        "net_added_04": {"type": "choice", "choice": "equal",
+                         "probabilities": {"equal": 0.51, "appeared_more": 0.27,
+                                           "removed_more": 0.22}},
+    },
+    "usage": {"input_tokens": 1184, "output_tokens": 0, "latency_ms": 39.0},
+}
+
+
+def test_verify_step_returns_typed_answers_with_the_probability_behind_each(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE)))
+
+    by_id = {a["id"]: a for a in out["answers"]}
+    assert by_id["present_00"] == {"id": "present_00", "type": "noul", "value": True,
+                                   "prob": pytest.approx(0.812)}
+    assert by_id["present_01"]["value"] is False and by_id["present_01"]["prob"] == pytest.approx(0.204)
+    assert by_id["net_added_04"]["value"] == "equal" and by_id["net_added_04"]["prob"] == pytest.approx(0.51)
+    assert out["backend"] == "laya" and out["advisory"] is True
+
+
+def test_verify_step_offers_no_prose_channel_back(monkeypatch):
+    """The point of the typed channel: nothing the screen says can come back as an instruction."""
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE)))
+    for answer in out["answers"]:
+        assert isinstance(answer["value"], (bool, str))
+        assert answer["type"] in ("noul", "choice")
+    assert set(out) == {"answers", "diff", "schema_version", "backend", "advisory", "measured",
+                        "boundary"}
+
+
+def test_verify_step_sends_the_diff_and_not_the_tree(monkeypatch):
+    import laya_mcp_server as srv
+
+    seen = _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE))
+
+    state = seen[0]["state"]
+    assert set(state) == {"diff"}
+    assert "Error while saving the file" in state["diff"] and "3 items" in state["diff"]
+    assert "Refresh" not in state["diff"], "unchanged elements must not be in the state"
+    assert seen[0]["questions"] and all(q["instructions"] for q in seen[0]["questions"].values())
+
+
+def test_verify_step_reports_the_size_of_what_it_read(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE)))
+    assert out["diff"]["elements_before"] == 4 and out["diff"]["elements_after"] == 4
+    assert out["diff"]["lines"] == 2 and out["diff"]["chars"] > 0
+    assert out["diff"]["truncated"] is False
+
+
+def test_verify_step_carries_its_measured_accuracy_and_its_boundary(monkeypatch):
+    """A tool whose answers sit near the baseline has to say so where it is called."""
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE)))
+    assert "0.602" in out["measured"] and "baseline" in out["measured"]
+    assert "pixels" in out["boundary"], "the a11y-invisibility boundary ships with the call"
+
+
+def test_verify_step_respects_a_tighter_line_budget(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE),
+                                     max_lines=1))
+    # The budget caps each side at one line; this pair has exactly one line per side, so nothing
+    # was dropped and `truncated` must stay false — a flag that fires without truncation is a lie.
+    assert out["diff"]["lines"] == 2 and out["diff"]["truncated"] is False
+
+    many_before = {"app": "x", "elements": [{"role": "Text", "label": f"old {i}"} for i in range(9)]}
+    many_after = {"app": "x", "elements": [{"role": "Text", "label": f"new {i}"} for i in range(9)]}
+    capped = json.loads(srv.verify_step(json.dumps(many_before), json.dumps(many_after),
+                                        max_lines=3))
+    assert capped["diff"]["lines"] == 6 and capped["diff"]["truncated"] is True
+
+
+def test_verify_step_refuses_something_that_is_not_a_capture():
+    import laya_mcp_server as srv
+
+    with pytest.raises(Exception) as exc:
+        srv.verify_step(json.dumps({"elements": []}), json.dumps(AFTER_CAPTURE))
+    assert "elements" in str(exc.value)
+
+
+def test_verify_step_rejects_an_unknown_backend(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, reply=VERIFY_REPLY)
+    with pytest.raises(ValueError):
+        srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE), backend="gpt-5")
+
+
+def test_verify_step_raises_rather_than_returning_empty_answers(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, exc=TimeoutError("engine went away"))
+    with pytest.raises(RuntimeError) as exc:
+        srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE))
+    assert "could not answer" in str(exc.value)
+
+
+def test_verify_step_says_so_when_the_router_package_is_missing(monkeypatch):
+    import laya_mcp_server as srv
+
+    _break_router_import(monkeypatch)
+    with pytest.raises(RuntimeError) as exc:
+        srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE))
+    assert "laya_router" in str(exc.value)
+
+
+@pytest.mark.skipif(not LIVE, reason="set LAYA_EXE and LAYA_MODEL to run live tests")
+def test_live_verify_step_reads_a_real_diff():
+    import laya_mcp_server as srv
+
+    out = json.loads(srv.verify_step(json.dumps(BEFORE_CAPTURE), json.dumps(AFTER_CAPTURE)))
+    assert out["answers"], "the engine answered the generated questions"
+    values = {a["id"]: a["value"] for a in out["answers"]}
+    # "Error while saving the file" is in the after-tree, and this is a real measurement, not an
+    # assertion that the model is right: the accuracy is reported in docs/verify-step.md.
+    assert isinstance(values.get("error_present_03"), bool)
+    assert out["diff"]["lines"] >= 1

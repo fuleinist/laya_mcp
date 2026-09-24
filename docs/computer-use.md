@@ -102,6 +102,14 @@ exactly the size Laya's window handles well, and for a closed question the measu
 **28–110 ms**, against ~200 ms for a small vision model and ~10 s for a reasoning guard. Ask:
 "did the content change as intended?", "is the dialog gone?", "did an error region appear?"
 
+**Measured on 15 real same-app capture pairs ([`verify-step.md`](verify-step.md)), this is half
+right and the half that matters is the token claim.** The diff is as cheap as advertised (p50 92
+chars, ~200 tokens was not the problem), but the *questions* are, and the encoder pays for each one
+over the whole state: 7 questions over one 1,606-char diff cost ~4,600 input tokens, so **95% of calls
+land over the 768-token state budget** and the latency claim survives only because it is the local
+engine's. On accuracy the same run says **do not gate on it**: 0.602 against a 0.569 majority-class
+baseline on the `present` questions and *below* the 0.733 baseline on "did an error appear".
+
 ### 4.3 Action gate before execution
 Screen-independent and therefore free of §3's problem: the action string is trusted-plan text.
 Gate `click/type/key` payloads and CLI commands as irreversible or sensitive before the driver

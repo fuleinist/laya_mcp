@@ -1,0 +1,32 @@
+{
+  "schema_version": "verify-v1",
+  "notes": "Question templates for verifying a step from an accessibility diff. Every answer is a typed value (bool or a closed enum), never free text: the element spec lives in the question, so nothing about the screen can come back as an instruction (the quarantined-perception pattern in docs/computer-use.md 4.1). The state is the diff only, which is what keeps this inside the 1024-token window. Gold answers are derived from the two trees for scoring; verify_step never returns them.",
+  "state_hint": "A bounded accessibility diff: lines that appeared, prefixed '+', and lines that disappeared, prefixed '-'. Each line is '<role>: <label>'.",
+  "questions": {
+    "present": {
+      "type": "noul",
+      "instructions": "This diff is what changed on screen between two captures. Answer about the CURRENT screen only. Is there now an element with role {role} whose label is \"{label}\"?",
+      "gold_from": "after_tree"
+    },
+    "role_present": {
+      "type": "noul",
+      "instructions": "This diff is what changed on screen between two captures. Answer about the CURRENT screen only. Does the current screen contain an element with the role {role}?",
+      "gold_from": "after_tree"
+    },
+    "error_present": {
+      "type": "noul",
+      "instructions": "This diff is what changed on screen between two captures. Answer about the CURRENT screen only. Does the current screen contain an element whose label reports an error, a failure or a warning?",
+      "gold_from": "after_tree"
+    },
+    "net_added": {
+      "type": "choice",
+      "instructions": "Count only the lines of this diff. Did more elements appear than disappear?",
+      "criteria": {
+        "appeared_more": "more lines start with + than with -",
+        "removed_more": "more lines start with - than with +",
+        "equal": "the same number of lines start with + and with -"
+      },
+      "gold_from": "diff"
+    }
+  }
+}

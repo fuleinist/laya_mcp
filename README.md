@@ -116,10 +116,10 @@ so a suite asserting labels would be red for reasons unrelated to the server.
 
 ## Tools
 
-Seven tools. Tool-selection quality in an agent collapses past roughly this many, so the
-descriptions are kept short and mutually exclusive. The seventh (`route_step`) arrived with step 2
-of the computer-use integration (issue #3) and is the *measured*, schema-driven router; `laya_route`
-stays for the preset's opinion and for existing callers.
+Eight tools. Tool-selection quality in an agent collapses past roughly this many, so the descriptions
+are kept short and mutually exclusive. The seventh (`route_step`) and eighth (`verify_step`) arrived
+with steps 2 and 3 of the computer-use integration (issue #3); `verify_step` carries its measured
+accuracy in its own description because its answers sit near the baseline.
 
 | Tool | Signature | Returns |
 |---|---|---|
@@ -129,7 +129,10 @@ stays for the preset's opinion and for existing callers.
 | `laya_route` | `(task)` | difficulty, model tier, needs-tools, needs-human, act/escalate |
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
 | `route_step` | `(task, context?, backend?, timeout_ms?)` | `tier` (economy/frontier) + `needs_tools` + `sensitive` from the committed schema, with the schema digest and an advisory marker |
+| `verify_step` | `(before, after, backend?, max_lines?, timeout_ms?)` | Typed answers (yes/no, closed choice) about an accessibility diff, each with its probability — measured at 0.602 on 103 real diffs, so it is evidence, not a gate |
 | `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, call count |
+
+`laya_route` (the preset router) stays for the preset's opinion and for existing callers.
 
 `route_step` answers `laya_router/data/questions.json` verbatim — the same question the HTTP service
 serves and the published eval in [`docs/router-service.md`](docs/router-service.md) measures — so its
@@ -310,6 +313,14 @@ python -m laya_router.eval --backends "laya,openai:<base_url>|<model>|<KEY_ENV>"
 ## Honest limits
 
 Read this before gating anything on a probability.
+
+- **Nothing in the computer-use path gates.** `route_step` and `verify_step` both return
+  `advisory: true` with a `boundary` string on every call, and both carry their measured accuracy:
+  `verify_step` is 0.602 overall on 103 real diffs against a 0.569 majority-class baseline, and
+  *below* the baseline on the "did an error appear" question. An accessibility diff cannot see an
+  instruction rendered as pixels, so neither tool is allowed to be the thing that decides a step
+  succeeded — see [`docs/verify-step.md`](docs/verify-step.md) and
+  [`docs/computer-use.md`](docs/computer-use.md) §6.
 
 - **The checkpoints ship uncalibrated.** `temperature = [1.0, 1.0, 1.0]`, no per-option-count
   buckets, systematically over-confident (mean confidence 0.75-0.83 against far lower accuracy).

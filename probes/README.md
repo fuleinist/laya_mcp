@@ -10,6 +10,7 @@ claim in the docs can be re-measured on your own engine.
 | `screen_gate_probe2.py` | the follow-up matrix: prose vs JSON vs `labels only` vs chrome, plus length and single-word rewording effects | `docs/computer-use.md` §3 |
 | `flappy_recipe_probe.py` | state serialisation (prose / JSON / bare numbers) and the question-clause effect, on the flappy question | `laya-game-playing` → `references/state-wording.md` |
 | `route_step_probe.py` | the two call paths of step 2: the same task routed over HTTP (`/route`) and over MCP (`route_step`), asserting one schema digest and one tier from both | `docs/router-service.md` (step 2) |
+| `a11y_diff_probe.py` | step 3 on real accessibility diffs: `--pairs-only` prints the size/question profile without an engine, otherwise `verify_step` is measured per question kind against its majority-class baseline | `docs/verify-step.md` |
 | `setup_laya_sdk.sh` | installs the **Python SDK** (torch) path — not the ggmlc binary path the MCP actually serves | — |
 
 Configuration is the same environment the MCP server uses: `LAYA_EXE`, `LAYA_MODEL`, and optionally
