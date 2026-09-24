@@ -84,10 +84,15 @@ Paired, on the tier decision:
 
 Tokens: Laya 23,480 in / **0 out**; the chat backend 41,171 in / 15,045 out.
 
-A second baseline (`openai/gpt-5-mini`, same corpus and schema, quota-limited) landed on the same
-accuracy and the same discordant split — 0.616 vs 0.699, McNemar p = 0.405. That is the same
-"tie at 35× lower latency" pattern the upstream study found, reproduced on a different pair of
-models, which is the sort of thing worth noticing rather than averaging.
+A second baseline (`openai/gpt-5-mini`, same corpus and schema, quota-limited) lands on the identical
+aggregate: 0.616 vs 0.699, and the same four discordant counts (30/15/21/7, hence the same p = 0.405).
+Read the two files side by side and the agreement is a **coincidence of counts, not a replication of
+answers**: the two hosted models disagree with each other on **25 of 73 items** (11 flips right→wrong,
+balanced by 11 wrong→right), and their failure modes differ too — 9 calls lost at the tail to credit
+checks against 8 scattered rate limits for `agnes-2.5-flash`. An earlier draft of this section called
+that a replication "on a different pair of models"; it is not, and the p-value agreement is not
+independent evidence. What the second run does support, on its own, is that Laya's non-separability is
+not an artifact of one hosted reader: each pairing lands near p ≈ 0.4 separately.
 
 ### What the numbers say
 
