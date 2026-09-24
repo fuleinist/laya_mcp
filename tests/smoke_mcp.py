@@ -100,13 +100,14 @@ async def run(server: str) -> int:
             t0 = time.time()
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
-            record("tools/list returns seven tools", len(names) == 7, f"{len(names)}: {', '.join(names)}")
+            record("tools/list returns eight tools", len(names) == 8, f"{len(names)}: {', '.join(names)}")
             record("every tool has a description",
                    all((t.description or "").strip() for t in tools),
                    f"{sum(1 for t in tools if (t.description or '').strip())}/{len(tools)} documented")
             record("handler for every advertised tool",
                    set(names) == {"laya_decide", "laya_gate", "laya_triage", "laya_route",
-                                  "laya_classify", "laya_health", "route_step"}, "names match the README")
+                                  "laya_classify", "laya_health", "route_step", "verify_step"},
+                   "names match the README")
             print(f"          (handshake + list_tools in {(time.time() - t0) * 1000:.0f} ms)")
 
             print("\n== tools ==")
@@ -175,6 +176,35 @@ async def run(server: str) -> int:
                    design.get("tier") in {"economy", "frontier"},
                    f"tier={design.get('tier')} p={design.get('tier_prob'):.3f}")
 
+            # verify_step (issue #3, step 3): typed answers about a real diff, over stdio. The two
+            # captures below are synthetic on purpose — the smoke suite must not need a screen — and
+            # the answers are checked for shape and closure, never for correctness (that is measured
+            # in docs/verify-step.md, and asserting accuracy here would smuggle a claim into a smoke
+            # test).
+            before_ax = {"app": "smoke.exe", "window_title": "smoke", "elements": [
+                {"role": "Button", "label": "Refresh"}, {"role": "Text", "label": "Ready"},
+                {"role": "Text", "label": "3 items"}]}
+            after_ax = {"app": "smoke.exe", "window_title": "smoke", "elements": [
+                {"role": "Button", "label": "Refresh"}, {"role": "Text", "label": "Ready"},
+                {"role": "Text", "label": "Error while saving the file"}]}
+            ver = parse(await call(session, "verify_step",
+                                   {"before": json.dumps(before_ax), "after": json.dumps(after_ax)}))
+            answers = ver.get("answers") or []
+            record("verify_step returns typed answers with probabilities",
+                   bool(answers) and all(a.get("type") in ("noul", "choice")
+                                         and isinstance(a.get("value"), (bool, str))
+                                         and (a.get("prob") is None or 0.0 <= a["prob"] <= 1.0)
+                                         for a in answers),
+                   f"{len(answers)} answers: "
+                   + ", ".join(f"{a['id']}={a['value']}({a['prob']:.2f})" for a in answers[:5]))
+            record("verify_step sends the diff and reports its size",
+                   ver.get("diff", {}).get("lines", 0) >= 1
+                   and (ver.get("diff") or {}).get("elements_after") == 3,
+                   f"diff={ver.get('diff')}")
+            record("verify_step carries its measured accuracy and its a11y boundary",
+                   "0.602" in str(ver.get("measured")) and "pixels" in str(ver.get("boundary")),
+                   f"schema={ver.get('schema_version')} advisory={ver.get('advisory')}")
+
             cat = {"security_fail": "code execution, leakage, unpinned scripts",
                    "ci_fail": "failing checks", "safe_bump": "focused version bump only"}
             items = ["workflow adds a new run: block curl|wget pipeline from an unknown action",
@@ -205,6 +235,10 @@ async def run(server: str) -> int:
                  ("route_step", {"task": "a task", "backend": "gpt-5"})),
                 ("route_step with no task",
                  ("route_step", {"task": "  "})),
+                ("verify_step with no elements",
+                 ("verify_step", {"before": "{\"elements\": []}", "after": "{}"})),
+                ("verify_step with an unknown backend",
+                 ("verify_step", {"before": "{}", "after": "{}", "backend": "gpt-5"})),
             ]
             for label, (tool, args) in bads:
                 try:

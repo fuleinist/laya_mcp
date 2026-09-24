@@ -118,7 +118,7 @@ label Laya must predict.
 |---|---|---|
 | Step/tier router, sensitivity + needs-tools flags | **yes** | article: 0.867 needs_tools, ECE 0.093; 16 ms local |
 | Quarantined typed perception (bool/enum about screen text) | **yes** | no text generation by construction — the UCM/Dual-LLM requirement |
-| Verification of a step from an a11y diff | **yes, plausibly** | diffs are ~200 tokens; inside the 1024-token window; 28–110 ms measured |
+| Verification of a step from an a11y diff | **built, advisory, measured low** | [`verify-step.md`](verify-step.md): 15 real pairs, 103 typed questions; 0.602 vs a 0.569 majority-class baseline (and 0.733 on the error question, where the constant answer wins); the diff is cheap, the question set is not (~4,600 tokens for 7 questions) |
 | Gate on raw screen text | **not yet** | measured false positives to 1.000 on ordinary UI text, false negatives to 0.001 on a real payload, flips on rewording |
 | Grounding / click coordinates | **no** | no vision encoder, no spatial output |
 | Holding a full a11y tree | **no** | one window = 42,878 chars ≈ 12k tokens vs a ~2,300-char usable window |
