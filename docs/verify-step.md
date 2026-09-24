@@ -85,7 +85,7 @@ The claim in §4.2 — a diff is ~200 tokens — is true of the diff:
 
 | what | measured |
 |---|---|
-| diff chars across the 15 pairs | p50 **92**, p90 **1,218**, max **1,265** (~575 tokens) |
+| diff chars across the 15 pairs, `labels` run | p50 **92**, p90 **1,218**, max **1,265** (~575 tokens) |
 | pairs cut at the 40-line-per-side bound | **5 of 15** (the window-repaint cases; none reached the 1,600-char bound first) |
 | engine input tokens, **1** question on a 1,606-char diff | **~660** |
 | engine input tokens, **7** questions on the same diff | **~4,600** |
@@ -164,3 +164,11 @@ The two `vs_agnes` / `vs_longcat` hosted arms are 103/103 failures: Agnes and Lo
 providers before the fifth worked — OpenAI ("no credits"), OpenRouter and Agnes ($0), LongCat ("token
 quota"), MiniMax ("plan does not include the model"). A table of provider failures is not a result,
 but deleting it would make the hosted arm look easier than it was.
+
+One thing inside those two files is actively misleading and worth naming: their `paired` block reports
+`p = 0.000` over an arm that answered nothing, under a `scope` string (`items both answered`) that the
+harness no longer produces — it was written before #9 corrected the label to "items asked of both
+backends; an unanswered item counts as a miss". A McNemar p-value between a working engine and a
+provider that failed 103 of 103 calls measures the outage, not the models. The artifacts are left
+exactly as written: they are the evidence of a failed arm, and patching their fields afterwards would
+be worse than explaining them.
