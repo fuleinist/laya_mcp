@@ -355,14 +355,24 @@ def laya_classify(items: list[str], catalog: dict[str, str],
 
 @mcp.tool(
     description=(
-        "Report the Laya backend state: executable, loaded model/family, device, CUDA-graph "
-        "status, timeout, uptime and call count. Use when another tool times out or returns a "
-        "daemon error."
+        "Report and PROBE the Laya backend: `reachable` says whether the engine answers (starting "
+        "it if needed), plus executable, loaded model/family, device, CUDA-graph status, timeout, "
+        "uptime and call count. Use when another tool times out or returns a daemon error; a "
+        "`reachable: false` result carries the underlying error."
     )
 )
 def laya_health() -> str:
-    """Backend health and configuration."""
-    return json.dumps(DAEMON.health(), ensure_ascii=False, indent=2)
+    """Backend health. Probes the engine instead of only reporting past activity."""
+    try:
+        DAEMON.start()
+    except Exception as exc:
+        state = DAEMON.health()
+        state["reachable"] = False
+        state["error"] = f"{type(exc).__name__}: {exc}"
+        return json.dumps(state, ensure_ascii=False, indent=2)
+    state = DAEMON.health()
+    state["reachable"] = True
+    return json.dumps(state, ensure_ascii=False, indent=2)
 
 
 def _check() -> int:

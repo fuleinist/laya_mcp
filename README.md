@@ -102,6 +102,18 @@ OK  backend answered (cold 1388 ms, warm 11 ms)
 `--check` starts the backend, runs one injection fixture through the guard preset and prints the
 numbers. If it fails it says exactly what is missing. No agent required.
 
+```bash
+pip install -e ".[test]" && pytest -q          # unit tests: no model, GPU or network needed
+python tests/smoke_mcp.py                      # end-to-end over stdio, needs LAYA_EXE + LAYA_MODEL
+```
+
+`tests/smoke_mcp.py` drives the server as an MCP **client** over stdio — the same path an agent
+harness uses — so it covers transport, tool dispatch and the daemon child as well: every tool,
+four error paths, a two-sided injection/benign separation check, six concurrent calls (to prove
+responses are not crossed on the single FIFO daemon), and a latency summary. Accuracy assertions
+are shape-level on purpose: the stock checkpoints are near chance on zero-shot typed decisions,
+so a suite asserting labels would be red for reasons unrelated to the server.
+
 ## Tools
 
 Six tools, deliberately. Tool-selection quality in an agent collapses past roughly this many.
@@ -113,7 +125,7 @@ Six tools, deliberately. Tool-selection quality in an agent collapses past rough
 | `laya_triage` | `(text)` | intent, urgency, frustration, refund, churn |
 | `laya_route` | `(task)` | difficulty, model tier, needs-tools, needs-human, act/escalate |
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
-| `laya_health` | `()` | Backend paths, device, uptime, call count |
+| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, call count |
 
 ```jsonc
 // laya_decide example

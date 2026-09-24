@@ -1,0 +1,36 @@
+
+== transport ==
+  PASS  tools/list returns six tools       6: laya_classify, laya_decide, laya_gate, laya_health, laya_route, laya_triage
+  PASS  every tool has a description       6/6 documented
+  PASS  handler for every advertised tool  names match the README
+          (handshake + list_tools in 1 ms)
+
+== tools ==
+  PASS  laya_health reports config         exe=laya.exe model=laya_multilingual_q8_0.gguf
+  PASS  laya_health probes and reports reachable reachable=True running=True device=auto cuda_graph=True
+  PASS  laya_gate flags a planted injection prompt_injection=0.977 jailbreak=0.994
+  PASS  laya_gate separates benign text    benign=0.002 (margin +0.975)
+  PASS  guard probabilities are in [0,1]   5 answers
+  PASS  laya_triage returns a full aspect set 5 aspects: churn_risk, frustration, intent, is_urgent, refund_requested
+  PASS  triage values are in [0,1]         
+  PASS  laya_decide routes en billing complaint dept=billing conf=1.000 refund=0.907
+  PASS  laya_decide routes ja billing complaint dept=billing conf=0.981 refund=0.992
+  PASS  laya_decide routes zh billing complaint dept=billing conf=0.999 refund=0.987
+  PASS  laya_route returns a routing decision 4 answers: difficulty, domain, is_sensitive, needs_tools
+  PASS  laya_classify answers once per item 3/3 items
+  PASS  classify labels stay inside the catalog labels: safe_bump, safe_bump, safe_bump
+          note: labels above are shape-checked only — zero-shot accuracy on bespoke
+                label spaces is near chance until a decision head is fine-tuned.
+
+== error paths (must be reported, never hang or crash) ==
+  PASS  rejects unknown question type      returned an MCP error
+  PASS  rejects question count over the cap returned an MCP error
+  PASS  rejects unknown preset             returned an MCP error
+  PASS  rejects classify catalog over 20 labels returned an MCP error
+
+== concurrency (one daemon, strict FIFO) ==
+  PASS  6 parallel calls answer their own questions 6/6 matched
+
+== latency ==  19 tool calls; after warm-up p50=31 ms, max=62 ms, total=2069 ms
+
+== summary ==  21/21 passed
