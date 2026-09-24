@@ -111,6 +111,53 @@ def test_health_reports_configuration(monkeypatch):
     assert health["running"] is False and health["calls"] == 0
 
 
+# --- regression: laya_health must PROBE (issue #1) --------------------------
+
+def test_health_tool_probes_the_engine(monkeypatch):
+    """A cold backend must never look unreachable.
+
+    Regression for issue #1: laya_health was a pure state read, so as the *first* call on a fresh
+    process it answered `running: false` — truthful about a child that had not been spawned yet,
+    and indistinguishable from "backend is down" for the agent reading it.
+    """
+    import laya_mcp_server as srv
+
+    probes = []
+    monkeypatch.setattr(srv.DAEMON, "start", lambda: probes.append(1))
+    monkeypatch.setattr(srv.DAEMON, "health",
+                        lambda: {"exe": "/x/laya", "running": True, "calls": 0, "uptime_s": 0.2})
+
+    payload = json.loads(srv.laya_health())
+    assert probes == [1], "health must probe the engine, not merely report past activity"
+    assert payload["reachable"] is True
+    assert payload["running"] is True
+
+
+def test_health_tool_surfaces_an_unreachable_backend(monkeypatch):
+    """A failing probe must say why, and must not claim the backend is up."""
+    import laya_mcp_server as srv
+
+    def boom():
+        raise RuntimeError("laya executable not found: 'laya'")
+
+    monkeypatch.setattr(srv.DAEMON, "start", boom)
+    monkeypatch.setattr(srv.DAEMON, "health", lambda: {"exe": "laya", "running": False, "calls": 0})
+
+    payload = json.loads(srv.laya_health())
+    assert payload["reachable"] is False
+    assert "laya executable not found" in payload["error"], "the cause must reach the caller"
+    assert payload["running"] is False
+
+
+def test_health_tool_always_reports_reachability(monkeypatch):
+    """Schema pin: `reachable` is the answer to the question callers actually ask — keep it."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv.DAEMON, "start", lambda: None)
+    monkeypatch.setattr(srv.DAEMON, "health", lambda: {"running": True})
+    assert "reachable" in json.loads(srv.laya_health())
+
+
 # --- live backend (opt-in) --------------------------------------------------
 
 @pytest.mark.skipif(not LIVE, reason="set LAYA_EXE and LAYA_MODEL to run live tests")
