@@ -158,6 +158,61 @@ like this is one layer, never the defence. That is the same boundary as
 `computer-use.md` §6, restated at the point of use because a caller reading `sensitive: true` might
 otherwise assume the screen was analysed.
 
+## Step 2: the same decision over HTTP and over MCP
+
+Step 2 of #3 asks for `/route` reachable over HTTP *and* as an MCP tool from both harnesses. The
+HTTP half shipped in step 1; this adds the tool.
+
+`route_step(task, context?, backend?, timeout_ms?)` answers the identical schema object — the Laya
+backend is the server's own daemon child, so no extra process and no extra VRAM — and returns the
+decision with its schema digest and the advisory marker. Semantics worth stating, because they are
+where a router gets misused:
+
+* an **unanswered** route raises (MCP) or returns **502** (HTTP). A `tier: null` in a 200 would read
+  like a third class, and an agent will happily treat it as one.
+* `backend="frontier"` needs `LAYA_ROUTER_FRONTIER='openai:<base_url>|<model>|<KEY_ENV>'` in the
+  server's environment; with it unset the tool says so instead of silently routing locally.
+* `laya_router` is imported lazily, so a deployment that ships only `laya_mcp_server.py` still serves
+  the six engine-backed tools and gets one clear error on this one.
+
+Both paths, same task, same backend — `probes/route_step_probe.py`:
+
+| task | path | backend | tier | p | needs_tools | sensitive | ms | schema digest |
+|---|---|---|---:|---:|---|---|---:|---|
+| mechanical | HTTP | laya | economy | 0.522 | false | false | 189 | e85eb2814e73fc58 |
+| mechanical | MCP | laya | economy | 0.522 | false | false | 212 | e85eb2814e73fc58 |
+| design | HTTP | laya | frontier | 0.623 | false | false | 30 | e85eb2814e73fc58 |
+| design | MCP | laya | frontier | 0.623 | false | false | 239 | e85eb2814e73fc58 |
+| sensitive | HTTP | laya | frontier | 0.659 | false | **true** | 28 | e85eb2814e73fc58 |
+| sensitive | MCP | laya | frontier | 0.659 | false | **true** | 188 | e85eb2814e73fc58 |
+| mechanical | HTTP | frontier | economy | 0.950 | true | false | 3,340 | e85eb2814e73fc58 |
+| design | HTTP | frontier | frontier | 0.900 | false | false | 3,083 | e85eb2814e73fc58 |
+
+The probe fails if a path answers a different digest or a different tier for the same task, so
+"reachable twice" is not the claim — "the same question answered twice" is. The MCP column includes
+the whole stdio round trip (handshake excluded); the HTTP column is the engine's own `latency_ms`,
+which is why 30 ms and 239 ms describe the same decision.
+
+### Harness wiring, verified rather than assumed
+
+* **Hermes**: `hermes mcp test laya` → `Connected (1547ms)`, `Tools discovered: 7`, with `route_step`
+  in the list. No configuration change — MCP tools are discovered at connect, so the tool appeared on
+  the existing server entry.
+* **OpenClaw**: `~/.openclaw/openclaw.json` registers the same stdio server
+  (`G:/dev/AI/laya/mcp-venv/Scripts/python.exe G:/dev/AI/laya_mcp/laya_mcp_server.py` with the same
+  `LAYA_*` env), so it discovers the same list on its next connect. That is a wiring check, not a
+  live connect.
+* **The transport itself** is covered end to end by `tests/smoke_mcp.py`, which drives the server as
+  an MCP *client* over stdio — the path both harnesses use — and now exercises `route_step` live:
+  a mechanical task and a design task routed, the probability distribution checked, the digest and
+  boundary checked, and two error paths. **27/27 passed**, tool calls after warm-up p50 = 31 ms.
+
+The tool count went 6 → 7 here. That is a real cost against the README's own heuristic (selection
+quality degrades past roughly this many), which is why `route_step`'s description says what it is
+*not* for and points at `laya_route` for the preset opinion — and why `laya_route` was not quietly
+retargeted at the new schema, which would have changed an existing tool's answer keys under its
+callers.
+
 ## Reproducing
 
 ```bash
