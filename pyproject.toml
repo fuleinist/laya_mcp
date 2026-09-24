@@ -31,6 +31,8 @@ Weights = "https://huggingface.co/mys/laya-multilingual-GGUF"
 
 [project.scripts]
 laya-mcp = "laya_mcp_server:main"
+laya-router = "laya_router.service:main"
 
 [tool.hatch.build.targets.wheel]
 py-modules = ["laya_mcp_server"]
+packages = ["laya_router"]

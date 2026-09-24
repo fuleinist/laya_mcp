@@ -257,6 +257,46 @@ a hidden, idempotent launcher for the Windows Startup folder (~260 MiB VRAM resi
 with `base_url=http://127.0.0.1:8131`. Note that the published model card mentions
 `/api/decide`; the shipped binary serves `/v1/systemone`, and `/api/decide` 404s.
 
+## The router service (step 1 of the computer-use integration)
+
+`laya_router/` answers one question about a step *before* it runs: does this need the frontier
+model, and is it sensitive? It is the first build step of [issue #3][issue3] — pure classification
+over a task description, no screen integration — because that is the cheap way to find out whether
+the local checkpoint earns a seat on the critical path.
+
+Two tiers, not three: the base checkpoint's middle-tier recall is 0.13 upstream, so the middle
+belongs in an *escalation* decision, not a label it has to predict. One question schema
+(`laya_router/data/questions.json`) is answered verbatim by both backends — the local ggmlc daemon
+and any OpenAI-compatible chat endpoint — so the comparison is paired item-for-item.
+
+```bash
+python -m laya_router.service --port 8760                     # Laya only
+python -m laya_router.service --port 8760 \
+  --frontier 'openai:https://openrouter.ai/api/v1|openai/gpt-5-mini|OPENROUTER_API_KEY'
+
+curl 'http://127.0.0.1:8760/health'
+curl 'http://127.0.0.1:8760/questions'
+curl 'http://127.0.0.1:8760/route?task=Cut+a+release+and+publish+the+artifacts'
+```
+
+`/route` returns `tier`, `needs_tools`, `sensitive`, the tier probabilities, latency, and
+`advisory: true`. Nothing here blocks an action: the corpus and the paired numbers in
+[`docs/router-service.md`](docs/router-service.md) are what decide whether it ever should. A
+text-channel decision cannot see instructions rendered into an *image* on screen — that boundary is
+restated in every `/route` reply, because it is the one place a caller might mistake this for a
+complete defence.
+
+Measure it yourself on the committed corpus — real work items from this machine's own repositories
+and schedules ([`laya_router/data/CORPUS.md`](laya_router/data/CORPUS.md) records where each line
+came from):
+
+```bash
+python -m laya_router.eval --backends "laya,openai:<base_url>|<model>|<KEY_ENV>" \
+  --out laya_router/data/results/run.json
+```
+
+[issue3]: https://github.com/fuleinist/laya_mcp/issues/3
+
 ## Honest limits
 
 Read this before gating anything on a probability.
