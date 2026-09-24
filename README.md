@@ -116,7 +116,10 @@ so a suite asserting labels would be red for reasons unrelated to the server.
 
 ## Tools
 
-Six tools, deliberately. Tool-selection quality in an agent collapses past roughly this many.
+Seven tools. Tool-selection quality in an agent collapses past roughly this many, so the
+descriptions are kept short and mutually exclusive. The seventh (`route_step`) arrived with step 2
+of the computer-use integration (issue #3) and is the *measured*, schema-driven router; `laya_route`
+stays for the preset's opinion and for existing callers.
 
 | Tool | Signature | Returns |
 |---|---|---|
@@ -125,7 +128,14 @@ Six tools, deliberately. Tool-selection quality in an agent collapses past rough
 | `laya_triage` | `(text)` | intent, urgency, frustration, refund, churn |
 | `laya_route` | `(task)` | difficulty, model tier, needs-tools, needs-human, act/escalate |
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
+| `route_step` | `(task, context?, backend?, timeout_ms?)` | `tier` (economy/frontier) + `needs_tools` + `sensitive` from the committed schema, with the schema digest and an advisory marker |
 | `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, call count |
+
+`route_step` answers `laya_router/data/questions.json` verbatim — the same question the HTTP service
+serves and the published eval in [`docs/router-service.md`](docs/router-service.md) measures — so its
+accuracy is a number you can check rather than a claim. It is advisory: it decides *which model
+should do the work*, never whether an action is allowed, and it cannot see instructions rendered into
+an image on screen.
 
 ```jsonc
 // laya_decide example
@@ -162,7 +172,7 @@ written**; it needs a real terminal.) Then:
 
 ```bash
 hermes mcp list            # laya  ...  ✓ enabled
-hermes mcp test laya       # Connected, 6 tools
+hermes mcp test laya       # Connected, 7 tools
 ```
 
 Or hand-write the entry in `config.yaml`:
@@ -351,7 +361,9 @@ transport. Model: 345 MB on disk, ~260 MiB VRAM resident (the PyTorch path costs
   from wedging the agent.
 - **Validation is client-side** because the daemon degrades unknown question types to an empty
   `choice` silently — a worse failure than a loud error.
-- **Six tools**, not thirty, for tool-selection quality.
+- **Seven tools**, not thirty, for tool-selection quality. Each addition has to earn its
+  place: `route_step` did, because it is the measured router, and every description says what its
+  tool is *not* for.
 
 ## Credits and license
 

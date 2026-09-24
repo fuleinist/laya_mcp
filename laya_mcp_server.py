@@ -353,6 +353,79 @@ def laya_classify(items: list[str], catalog: dict[str, str],
     return _fmt(DAEMON.call(_payload(state, questions), timeout_ms))
 
 
+def _router_module():
+    """Import `laya_router` lazily.
+
+    The server still works if it is missing (the six engine-backed tools do not depend on it), so
+    the import failure is reported as advice on the one tool that needs it rather than as an
+    import-time crash that would take the whole MCP server down.
+    """
+    try:
+        from laya_router import backends as rbackends, questions as rquestions
+    except Exception as exc:  # pragma: no cover - import environment dependent
+        raise RuntimeError(
+            "route_step needs the laya_router package, which ships in this repo next to "
+            f"laya_mcp_server.py. Import failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    return rbackends, rquestions
+
+
+@mcp.tool(
+    description=(
+        "Route a step to a tier BEFORE running it: economy (mechanical, one pass, cheap) or "
+        "frontier (needs exploration, multi-step, expensive to get wrong), plus needs_tools and "
+        "sensitive flags. Answers a committed, versioned question schema, so the decision is "
+        "comparable across models and re-measurable. Use it to decide which model should do the "
+        "work, never to block an action: the response is advisory, and gate quality on the "
+        "committed eval, not on one call. For a fixed-preset routing opinion use laya_route "
+        "instead; this tool is the measured, schema-driven one."
+    )
+)
+def route_step(task: str, context: str | None = None, backend: str = "laya",
+               timeout_ms: int | None = None) -> str:
+    """Two-tier routing decision from the shared router schema (laya_router/)."""
+    rbackends, rquestions = _router_module()
+    schema = rquestions.load_schema()
+    state = rquestions.build_state(task, context)
+
+    if backend == "laya":
+        chosen = rbackends.LayaBackend(daemon=DAEMON)  # reuse this server's daemon child
+    elif backend == "frontier":
+        registry = rbackends.default_registry()
+        if "frontier" not in registry:
+            raise ValueError(
+                "no frontier backend is configured. Set "
+                "LAYA_ROUTER_FRONTIER='openai:<base_url>|<model>|<KEY_ENV>' in this server's "
+                "environment, or call the HTTP service (laya_router.service) where the backend "
+                "is named per deployment"
+            )
+        chosen = registry["frontier"]
+    else:
+        raise ValueError(f"backend must be 'laya' or 'frontier'; got {backend!r}")
+
+    decision = chosen.route(state, schema, (timeout_ms or TIMEOUT_MS) / 1000)
+    if not decision.answered:
+        # An unanswered route must not reach the agent as `tier: null`, which reads like a class.
+        raise RuntimeError(
+            f"{chosen.name} could not answer the router schema: {decision.error or 'unknown error'}"
+        )
+    body = decision.to_dict()
+    body |= {
+        "schema_version": schema["schema_version"],
+        "schema_digest": rquestions.digest(schema),
+        "advisory": True,
+        "boundary": (
+            "advisory only: nothing here blocks an action, and a text-channel decision cannot see "
+            "instructions embedded in an image on screen (docs/computer-use.md section 6)"
+        ),
+        "measured": (
+            "tier accuracy and the paired comparison against a hosted model are in "
+            "docs/router-service.md; sensitive precision is 0.208, so do not gate on it"
+        ),
+    }
+    return json.dumps(body, ensure_ascii=False, indent=2)
+
+
 @mcp.tool(
     description=(
         "Report and PROBE the Laya backend: `reachable` says whether the engine answers (starting "

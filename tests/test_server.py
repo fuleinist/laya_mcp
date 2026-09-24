@@ -158,6 +158,104 @@ def test_health_tool_always_reports_reachability(monkeypatch):
     assert "reachable" in json.loads(srv.laya_health())
 
 
+# --- route_step: the MCP surface of step 2 (issue #3) -----------------------
+
+DAEMON_REPLY = {
+    "answers": {
+        "tier": {"type": "choice", "choice": "frontier", "confidence": 0.0628,
+                 "probabilities": {"economy": 0.3536, "frontier": 0.6464}},
+        "needs_tools": {"type": "noul", "noul": 0.1665},
+        "sensitive": {"type": "noul", "noul": 0.7666},
+    },
+    "usage": {"input_tokens": 287, "output_tokens": 0, "latency_ms": 219.2},
+}
+
+
+def _fake_daemon(monkeypatch, reply=None, exc=None):
+    """Point the module-level DAEMON at a canned reply, recording the payloads it saw."""
+    import laya_mcp_server as srv
+
+    seen = []
+
+    def call(payload, timeout_ms=None):
+        seen.append(payload)
+        if exc:
+            raise exc
+        return dict(reply or DAEMON_REPLY)
+
+    monkeypatch.setattr(srv.DAEMON, "call", call)
+    return seen
+
+
+def test_route_step_answers_the_shared_schema(monkeypatch):
+    """One tool, one schema: the decision, its probabilities, the schema digest and the caveats."""
+    import laya_mcp_server as srv
+    from laya_router import questions as rq
+
+    seen = _fake_daemon(monkeypatch)
+    out = json.loads(srv.route_step("Design a two-tier router service with three HTTP endpoints."))
+
+    assert out["tier"] == "frontier" and out["tier_prob"] == pytest.approx(0.6464)
+    assert out["needs_tools"] is False and out["sensitive"] is True
+    assert out["schema_version"] == rq.load_schema()["schema_version"]
+    assert out["schema_digest"] == rq.digest(rq.load_schema())
+    assert out["advisory"] is True
+    assert "image" in out["boundary"], "the image-embedded-injection boundary ships with the call"
+
+
+def test_route_step_sends_the_committed_questions_verbatim(monkeypatch):
+    import laya_mcp_server as srv
+    from laya_router import questions as rq
+
+    seen = _fake_daemon(monkeypatch)
+    srv.route_step("Bump five devDependencies.", context="a build toolchain repo")
+    assert seen[0]["questions"] == rq.questions_of(rq.load_schema())
+    assert seen[0]["state"] == {"task": "Bump five devDependencies.", "context": "a build toolchain repo"}
+
+
+def test_route_step_requires_a_task(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch)
+    with pytest.raises(ValueError):
+        srv.route_step("   ")
+
+
+def test_route_step_rejects_an_unknown_backend(monkeypatch):
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch)
+    with pytest.raises(ValueError, match="economy|frontier|backend"):
+        srv.route_step("a task", backend="gpt-5")
+
+
+def test_route_step_raises_rather_than_returning_a_null_tier(monkeypatch):
+    """`tier: null` would read like a third class; a failed route is an error."""
+    import laya_mcp_server as srv
+
+    _fake_daemon(monkeypatch, exc=RuntimeError("laya daemon stream closed"))
+    with pytest.raises(RuntimeError, match="could not answer"):
+        srv.route_step("a task")
+
+
+def test_route_step_names_the_missing_package(monkeypatch):
+    import sys
+
+    import laya_mcp_server as srv
+
+    monkeypatch.setitem(sys.modules, "laya_router", None)  # makes `import laya_router` fail
+    with pytest.raises(RuntimeError, match="laya_router"):
+        srv.route_step("a task")
+
+
+def test_route_step_frontier_backend_needs_configuration(monkeypatch):
+    import laya_mcp_server as srv
+
+    monkeypatch.delenv("LAYA_ROUTER_FRONTIER", raising=False)
+    with pytest.raises(ValueError, match="LAYA_ROUTER_FRONTIER"):
+        srv.route_step("a task", backend="frontier")
+
+
 # --- live backend (opt-in) --------------------------------------------------
 
 @pytest.mark.skipif(not LIVE, reason="set LAYA_EXE and LAYA_MODEL to run live tests")
@@ -180,3 +278,13 @@ def test_live_choice_round_trip():
                                      "technical": "bugs and outages", "sales": "pricing"}}},
     ))
     assert out["answers"]["department"]["choice"] == "billing"
+
+
+@pytest.mark.skipif(not LIVE, reason="set LAYA_EXE and LAYA_MODEL to run live tests")
+def test_live_route_step_returns_a_tier_and_its_probability():
+    from laya_mcp_server import route_step
+
+    out = json.loads(route_step("Bump five devDependencies in the workspace."))
+    assert out["tier"] in {"economy", "frontier"}
+    assert 0.0 <= out["tier_prob"] <= 1.0
+    assert out["schema_digest"] and out["advisory"] is True
