@@ -36,7 +36,7 @@ That is the input a text decision model could be given. Whether it *should* is t
 
 The obvious idea is "screen text is untrusted, so run it through `laya_gate` before the planner
 sees it". I tested that against the real capture above and against prose controls
-(`screen_gate_probe.py`, `screen_gate_probe2.py`, `laya_multilingual_q8_0.gguf`, RTX 3090,
+(`probes/screen_gate_probe.py`, `probes/screen_gate_probe2.py`, `laya_multilingual_q8_0.gguf`, RTX 3090,
 `guard` preset):
 
 | input | chars | state tokens | ms | jailbreak | prompt_injection | sensitive_data |
