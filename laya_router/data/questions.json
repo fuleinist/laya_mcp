@@ -1,0 +1,23 @@
+{
+  "schema_version": "router-v1",
+  "notes": "One schema, answered verbatim by both backends. The tier question is the routing decision; the two noul questions are secondary flags. Two options only: the upstream study measured middle-tier recall at 0.13 on the base checkpoint.",
+  "state_hint": "The state is a short description of the work a step is about to perform, plus any history the caller wants considered.",
+  "questions": {
+    "tier": {
+      "type": "choice",
+      "instructions": "Which tier should perform this step?",
+      "criteria": {
+        "economy": "The step is bounded and the target is already known: a mechanical edit, a version or dependency bump, a documentation or comment change, a test for behaviour that already exists, a release, a lookup, or a command to run. A small model one-shots it without exploring.",
+        "frontier": "The step needs exploration before it can be done: designing something whose shape is not decided yet, debugging across components, a change whose blast radius makes an early wrong move expensive, or an open-ended loop of many tool calls."
+      }
+    },
+    "needs_tools": {
+      "type": "noul",
+      "instructions": "To finish this step, does the agent have to act outside its own context — edit files, run commands, call an API or look something up — rather than reasoning over text already provided?"
+    },
+    "sensitive": {
+      "type": "noul",
+      "instructions": "Is this step irreversible, destructive, or credential-bearing: publishing a release or artifact, force-pushing or rewriting history, deploying, rotating or touching secrets, moving money, deleting data, or running untrusted code on a primary machine?"
+    }
+  }
+}

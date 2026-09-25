@@ -31,6 +31,11 @@ Weights = "https://huggingface.co/mys/laya-multilingual-GGUF"
 
 [project.scripts]
 laya-mcp = "laya_mcp_server:main"
+laya-router = "laya_router.service:main"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["laya_mcp_server.py", "laya_browser_worker.py"]
+# `only-include` (hatchling) rather than `py-modules` (setuptools): hatchling ignores the
+# setuptools key, which is how a wheel that shipped laya_router but not the server module got
+# published here once. All three paths are needed: the two top-level modules and the package.
+only-include = ["laya_mcp_server.py", "laya_browser_worker.py", "laya_router"]
+packages = ["laya_router"]

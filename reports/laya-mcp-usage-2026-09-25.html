@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>laya-mcp — usage &amp; eval report 2026-09-25</title>
+<style>
+:root{
+  --bg:#0e1116; --panel:#151a21; --panel2:#1b2129; --line:#28313d; --line2:#38424f;
+  --fg:#e6ecf3; --dim:#98a4b3; --dim2:#6f7b8a;
+  --good:#4ec9a5; --warn:#e0b34a; --bad:#e0645f; --accent:#5aa9e6; --accent2:#8f7ee6;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;}
+.wrap{max-width:1080px;margin:0 auto;padding:44px 28px 96px}
+h1,h2,h3{line-height:1.25;margin:0}
+h1{font-size:29px;letter-spacing:-.02em;font-weight:650}
+h2{font-size:20px;letter-spacing:-.01em;margin:0 0 4px;font-weight:620}
+h3{font-size:15.5px;font-weight:620;margin:26px 0 8px;color:#cfd8e3}
+p{margin:10px 0}
+a{color:var(--accent)}
+code,kbd{font-family:var(--mono);font-size:12.6px;background:#0a0d12;border:1px solid var(--line);
+  border-radius:4px;padding:1px 5px;color:#cbd6e2}
+.eyebrow{font:600 11.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim2)}
+header.top{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:30px}
+header.top .meta{color:var(--dim);font-size:13.5px;margin-top:12px;display:flex;flex-wrap:wrap;gap:8px 18px}
+header.top .meta b{color:#c8d3df;font-weight:600}
+.badge{display:inline-block;font:600 11px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;
+  border:1px solid var(--line2);border-radius:99px;padding:4px 9px;color:var(--dim);background:#11161d}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin:0 0 34px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 16px}
+.card .k{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim2)}
+.card .v{font-size:26px;font-weight:640;letter-spacing:-.02em;margin:9px 0 3px;font-variant-numeric:tabular-nums}
+.card .s{font-size:12.6px;color:var(--dim)}
+.card.good .v{color:var(--good)} .card.warn .v{color:var(--warn)} .card.bad .v{color:var(--bad)}
+section{margin:52px 0 0;padding-top:6px}
+section > .head{border-bottom:1px solid var(--line);padding-bottom:11px;margin-bottom:20px}
+section > .head .n{font:600 11.5px/1 var(--mono);color:var(--accent);letter-spacing:.1em}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.6px}
+th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 11.5px/1.35 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim2);
+  border-bottom:1px solid var(--line2);white-space:nowrap}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.8px}
+tbody tr:hover{background:#171d25}
+tr.tot td{border-top:1px solid var(--line2);font-weight:620}
+.tick{color:var(--good);font-weight:700}.cross{color:var(--bad);font-weight:700}
+.note{border-left:2px solid var(--accent);background:#111922;padding:13px 16px;border-radius:0 8px 8px 0;
+  margin:18px 0;color:#cfd9e4;font-size:14px}
+.note.warn{border-left-color:var(--warn);background:#1a1710}
+.note.bad{border-left-color:var(--bad);background:#1c1214}
+.note .lbl{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim2);
+  display:block;margin-bottom:7px}
+ul,ol{margin:10px 0;padding-left:22px} li{margin:7px 0}
+ol.findings{counter-reset:f;list-style:none;padding-left:0}
+ol.findings > li{counter-increment:f;position:relative;padding:14px 16px 14px 52px;margin:11px 0;
+  background:var(--panel);border:1px solid var(--line);border-radius:9px;font-size:14.2px}
+ol.findings > li::before{content:counter(f);position:absolute;left:16px;top:14px;width:21px;height:21px;
+  border-radius:50%;background:#22303f;color:var(--accent);font:640 11.5px/21px var(--mono);text-align:center}
+ol.findings .sev{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;
+  border-radius:99px;padding:3px 7px;border:1px solid var(--line2);color:var(--dim);margin-left:7px;white-space:nowrap}
+.sev.hi{color:var(--bad);border-color:#5a2f2f;background:#201314}
+.sev.md{color:var(--warn);border-color:#54472a;background:#1d1910}
+.sev.lo{color:var(--dim);background:#161b22}
+.bar{height:9px;border-radius:99px;background:#232c36;position:relative;overflow:hidden;min-width:70px}
+.bar > i{position:absolute;inset:0 auto 0 0;border-radius:99px;background:var(--accent)}
+.bar.g > i{background:var(--good)} .bar.w > i{background:var(--warn)} .bar.b > i{background:var(--bad)}
+.timeline{display:grid;gap:5px;font-family:var(--mono);font-size:12.8px}
+.timeline .row{display:grid;grid-template-columns:170px 1fr;gap:12px;padding:6px 10px;
+  background:var(--panel);border:1px solid var(--line);border-radius:7px}
+.timeline .row .t{color:var(--dim)}
+.kv{display:grid;grid-template-columns:minmax(170px,260px) 1fr;gap:6px 18px;font-size:13.6px;margin:12px 0}
+.kv .k{color:var(--dim);font-family:var(--mono);font-size:12.6px}
+.kv .v{font-variant-numeric:tabular-nums}
+pre{margin:12px 0;padding:13px 15px;background:#0a0d12;border:1px solid var(--line);border-radius:9px;
+  overflow:auto;font-family:var(--mono);font-size:12.4px;line-height:1.55;color:#c4cfdb}
+pre .c{color:var(--dim2)}
+details{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 14px;margin:12px 0}
+details summary{cursor:pointer;font:600 12.5px/1.4 var(--mono);color:var(--dim);letter-spacing:.04em}
+details[open] summary{color:var(--fg);margin-bottom:6px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}.timeline .row{grid-template-columns:1fr}}
+footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:var(--dim2);font-size:12.6px}
+.small{font-size:12.7px;color:var(--dim)}
+hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+@media print{body{background:#fff;color:#111}.wrap{max-width:none}.card,ol.findings>li,details,pre{background:#f7f9fb}
+  th,td{border-color:#dde3ea}}
+</style>
+</head><body><div class="wrap">
+
+<header class="top">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <span class="eyebrow">usage &amp; eval report</span>
+    <span class="badge">laya-mcp 0.1.0</span>
+    <span class="badge">advisory only</span>
+  </div>
+  <h1 style="margin-top:12px">What the logs say about Laya-MCP</h1>
+  <div class="meta">
+    <span>generated <b>2026-09-25 19:47:18</b></span>
+    <span>repo <b>9b24117</b> on <b>main</b></span>
+    <span>engine <b>laya_multilingual_q8_0.gguf (ggmlc, RTX 3090)</b></span>
+    <span>window <b>2026-09-23 22:38:35 → 2026-09-25 17:23:16</b></span>
+  </div>
+</header>
+<div class="strip">
+  <div class="card"><div class="k">MCP server starts</div><div class="v">17</div>
+    <div class="s">over 3 days, from <code>mcp-stderr.log</code></div></div>
+  <div class="card warn"><div class="k">Agent tool calls recorded</div><div class="v">0</div>
+    <div class="s">no <code>mcp__laya__*</code> row in 58,864 stored messages</div></div>
+  <div class="card good"><div class="k">Live re-run today</div><div class="v">32/32</div>
+    <div class="s">32/32 passed ·
+      p50 31 ms warm</div></div>
+  <div class="card"><div class="k">Router tier accuracy</div><div class="v">61.6%</div>
+    <div class="s">vs 69.9% hosted —
+      <b>not separated</b> (p=0.41)</div></div>
+  <div class="card"><div class="k">verify_step accuracy</div><div class="v">60.2%</div>
+    <div class="s">62/103 real diffs ·
+      baseline 56.9% on the biggest question kind</div></div>
+  <div class="card good"><div class="k">Cost per decision</div><div class="v">27<span style="font-size:14px"> ms p50</span></div>
+    <div class="s">0 output tokens vs 15,045 hosted</div></div>
+</div>
+
+<div class="note">
+  <span class="lbl">bottom line</span>
+  The server is healthy and its measured behaviour is documented and reproducible — but
+  <b>the logs contain no record of an agent ever calling it</b>. Every quality number in this report comes
+  from committed eval harnesses, not from operational use, and the only per-call counter the server has
+  (<code>laya_health</code>'s <code>calls</code>) is process-local and is reset by each of the 17 restarts.
+  Treat this as a <b>build-and-measure</b> record, not a usage record. Findings 1–5 are what I would fix before
+  wiring it further.
+</div>
+<section><div class="head"><div class="n">01</div><h2>What was scanned</h2></div>
+<p>Every file on this machine that records Laya-MCP activity, and what it can actually answer.</p>
+<table>
+<thead><tr><th>source</th><th>what it holds</th><th class="n">size</th><th>authoritative for</th></tr></thead>
+<tbody>
+<tr><td><code>~/.hermes/logs/mcp-stderr.log</code></td><td>per-server stderr; the only "started" banner each MCP server writes</td>
+  <td class="n">204 MB</td><td>lifecycle: starts, crashes</td></tr>
+<tr><td><code>~/.hermes/logs/agent.log*</code> (4 rotations)</td><td>harness-side MCP registration, tool names, tool executor errors</td>
+  <td class="n">17.8 MB</td><td>what the harness discovered</td></tr>
+<tr><td><code>~/.hermes/state.db</code> → <code>messages</code></td><td>every stored turn and tool result, 832 sessions</td>
+  <td class="n">624 MB</td><td>whether a tool was ever <i>called</i></td></tr>
+<tr><td><code>~/.openclaw/logs/</code></td><td>gateway restarts and commands — <b>no tool-call records</b></td>
+  <td class="n">&lt;200 KB</td><td>nothing about tool use</td></tr>
+<tr><td><code>G:/dev/AI/laya/logs/serve-autostart.log</code></td><td><code>laya serve</code> HTTP access log (ports 8131/8132)</td>
+  <td class="n">3.6 KB</td><td>HTTP-path requests only</td></tr>
+<tr><td><code>laya_router/data/results/*.json</code></td><td>9 committed eval runs, per-item predictions + metrics</td>
+  <td class="n">715 KB</td><td><b>the quality numbers</b></td></tr>
+<tr><td><code>G:/dev/AI/laya_mcp/smoke.log</code></td><td>a captured smoke run, dated 2026-09-24 12:15:07</td>
+  <td class="n">2 KB</td><td>stale — see finding 3</td></tr>
+<tr><td><code>tests/smoke_mcp.py</code> re-run</td><td>live capture made for this report, 2026-09-25 19:47:18</td>
+  <td class="n">—</td><td>transport, tools, error paths, latency</td></tr>
+</tbody></table>
+<div class="note warn"><span class="lbl">what is not logged anywhere</span>
+Tokens, latency and the arguments of each call <b>as an MCP tool call</b>. The engine reports
+<code>latency_ms</code> and <code>usage</code> per forward pass, but the MCP server does not persist them, and
+<code>laya daemon</code> (stdio, the path MCP uses) writes no access log at all — only <code>laya serve</code> (HTTP) does.</div>
+</section>
+<section><div class="head"><div class="n">02</div><h2>Lifecycle: started 17 times, never crashed</h2></div>
+<p>Across 204 MB of merged MCP stderr, <code>laya</code> appears as 17 start banners and
+<b>zero</b> tracebacks or error lines — clean every time. (For scale: the same log holds
+95,709 starts for <code>headroom</code>, which is crash-looping, and 2026-09-23-onward
+registrations for seven other servers.)</p>
+<div class="timeline"><div class="row"><span class="t">2026-09-23 22:38:35</span><span>server start #1</span></div><div class="row"><span class="t">2026-09-23 22:39:15</span><span>server start #2</span></div><div class="row"><span class="t">2026-09-23 22:40:09</span><span>server start #3</span></div><div class="row"><span class="t">2026-09-23 22:40:17</span><span>server start #4</span></div><div class="row"><span class="t">2026-09-23 23:50:07</span><span>server start #5</span></div><div class="row"><span class="t">2026-09-24 12:15:22</span><span>server start #6</span></div><div class="row"><span class="t">2026-09-24 22:56:38</span><span>server start #7</span></div><div class="row"><span class="t">2026-09-24 22:59:41</span><span>server start #8</span></div><div class="row"><span class="t">2026-09-24 23:00:44</span><span>server start #9</span></div><div class="row"><span class="t">2026-09-24 23:00:47</span><span>server start #10</span></div><div class="row"><span class="t">2026-09-24 23:38:26</span><span>server start #11</span></div><div class="row"><span class="t">2026-09-24 23:40:31</span><span>server start #12</span></div><div class="row"><span class="t">2026-09-25 01:03:18</span><span>server start #13</span></div><div class="row"><span class="t">2026-09-25 07:16:34</span><span>server start #14</span></div><div class="row"><span class="t">2026-09-25 15:32:54</span><span>server start #15</span></div><div class="row"><span class="t">2026-09-25 17:19:10</span><span>server start #16</span></div><div class="row"><span class="t">2026-09-25 17:23:16</span><span>server start #17</span></div></div>
+<p class="small" style="margin-top:14px">The 17 starts are restarts of the host side — config edits,
+new sessions, desktop/gateway restarts — not crashes of the tool. Each one re-creates the server process
+and re-reads the tool schema (<code>~/.hermes/cache/mcp_schema_cache.json</code> → key <code>laya</code>,
+fingerprint <code>c0a06a428ebbcc57</code>). The engine child is spawned <b>lazily</b>, on the first call
+that touches the daemon, so a restart with no calls leaves no engine process behind at all. Measured for
+this report: an idle MCP server holds none, and a single <code>laya_health</code> call produces exactly one
+<code>laya daemon</code> child (PID 98012, 1.1 GB RSS) alongside the pre-existing autostart
+<code>laya serve</code> (PID 26960, 5.7 MB).</p>
+<h3>What the harness discovered, over time</h3>
+<table><thead><tr><th>registered at</th><th class="n">entries</th><th class="n">tools</th><th>note</th></tr></thead>
+<tbody><tr><td><code>2026-09-23 22:40:10</code></td><td class="n">10</td><td class="n">6</td><td class="small">10 entries — 6 engine tools + 4 MCP primitives</td></tr><tr><td><code>2026-09-25 07:16:35</code></td><td class="n">12</td><td class="n">8</td><td class="small">12 entries — 8 engine tools + 4 MCP primitives</td></tr><tr><td><code>2026-09-25 15:32:55</code></td><td class="n">12</td><td class="n">8</td><td class="small">12 entries — 8 engine tools + 4 MCP primitives</td></tr><tr><td><code>2026-09-25 17:19:11</code></td><td class="n">12</td><td class="n">8</td><td class="small">12 entries — 8 engine tools + 4 MCP primitives</td></tr><tr><td><code>2026-09-25 17:23:17</code></td><td class="n">12</td><td class="n">8</td><td class="small">12 entries — 8 engine tools + 4 MCP primitives</td></tr></tbody></table>
+<p class="small">Six engine-backed tools at first registration (2026-09-23 22:40:10), eight from
+2026-09-25 07:16:35 when <code>route_step</code> and <code>verify_step</code> landed. The tool surface is
+at the upper end of the README's own "selection quality degrades past ~7 tools" heuristic — noted in
+<code>docs/router-service.md</code>, not silently.</p>
+</section>
+<section><div class="head"><div class="n">03</div><h2>Did anything ever call it?</h2></div>
+<p>Three independent checks on the Hermes session store (58,864 messages,
+832 sessions, 2026-05-25 22:41:36 → 2026-09-25 19:47:15):</p>
+<table><thead><tr><th>check</th><th>query</th><th class="n">hits</th></tr></thead><tbody>
+<tr><td>tool-call rows naming a laya tool</td><td><code>tool_name LIKE '%laya%'</code></td>
+  <td class="n">0</td></tr>
+<tr><td>tool results carrying laya output keys</td><td><code>role='tool' AND content LIKE '%"act_escalate"%'</code></td>
+  <td class="n">0</td></tr>
+<tr><td>executor lines in 4 agent-log rotations</td><td><code>grep 'Tool mcp__laya'</code></td>
+  <td class="n">0</td></tr></tbody></table>
+<div class="note bad"><span class="lbl">honest scope limit</span>
+This is conclusive for Hermes. OpenClaw's logs do not record tool calls at all, so "0 invocations"
+holds for one of the two harnesses; for OpenClaw it is <b>unmeasurable from disk</b>, not zero.</div>
+<h3>For comparison: the tools that <i>are</i> used</h3>
+<table><thead><tr><th>tool</th><th class="n">calls</th><th>share</th></tr></thead><tbody><tr><td><code>terminal</code></td><td class="n">24,176</td><td><div class="bar"><i style="width:100.00%"></i></div></td></tr><tr><td><code>read_file</code></td><td class="n">2,553</td><td><div class="bar"><i style="width:10.56%"></i></div></td></tr><tr><td><code>patch</code></td><td class="n">1,915</td><td><div class="bar"><i style="width:7.92%"></i></div></td></tr><tr><td><code>write_file</code></td><td class="n">1,405</td><td><div class="bar"><i style="width:5.81%"></i></div></td></tr><tr><td><code>process</code></td><td class="n">1,188</td><td><div class="bar"><i style="width:4.91%"></i></div></td></tr><tr><td><code>skill_view</code></td><td class="n">986</td><td><div class="bar"><i style="width:4.08%"></i></div></td></tr><tr><td><code>browser_console</code></td><td class="n">692</td><td><div class="bar"><i style="width:2.86%"></i></div></td></tr><tr><td><code>execute_code</code></td><td class="n">574</td><td><div class="bar"><i style="width:2.37%"></i></div></td></tr><tr><td><code>browser_navigate</code></td><td class="n">536</td><td><div class="bar"><i style="width:2.22%"></i></div></td></tr><tr><td><code>search_files</code></td><td class="n">502</td><td><div class="bar"><i style="width:2.08%"></i></div></td></tr></tbody></table>
+<p class="small">The repo was <i>built</i> in that window (10+ commits, PRs #4/#7/#8/#9) — so
+this is a build record. Also worth reading: the engine's own HTTP log holds
+<b>9 requests total</b> (GET /health, POST /v1/systemone),
+against 2 launches and one exit-143 kill on port 8132.</p>
+</section>
+<section><div class="head"><div class="n">04</div><h2>Live re-run, against the real engine</h2></div>
+<p>Everything above is history. This is this machine, now: the suite drives the server as an MCP
+<b>client over stdio</b> — the same path Hermes and OpenClaw use — so transport, tool dispatch and the
+daemon child are all exercised.</p>
+<div class="kv">
+  <div class="k">result</div><div class="v"><b>32/32 passed</b>, 32 PASS / 0 FAIL</div>
+  <div class="k">tools advertised</div><div class="v">8 engine tools (handshake + <code>tools/list</code> in 2 ms)</div>
+  <div class="k">latency</div><div class="v">26 tool calls; after warm-up p50=31 ms, max=65 ms, total=2496 ms</div>
+  <div class="k">captured at</div><div class="v">2026-09-25 19:47:18, from the tree at <code>9b24117</code> (clean, no diff affecting the server)</div>
+</div>
+<details open><summary>full run output — 32 assertions</summary>
+<table><tbody><tr class="tot"><td colspan="2"><b>transport</b> — 3/3 passed</td></tr><tr><td class="small"><code>tools/list returns eight tools     8: laya_classify, laya_decide, laya_gate, laya_health, laya_route, laya_triage, route_step, verify_step</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>every tool has a description       8/8 documented</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>handler for every advertised tool  names match the README</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr class="tot"><td colspan="2"><b>tools</b> — 20/20 passed</td></tr><tr><td class="small"><code>laya_health reports config         exe=laya.exe model=laya_multilingual_q8_0.gguf</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_health probes and reports reachable reachable=True running=True device=auto cuda_graph=True</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_gate flags a planted injection prompt_injection=0.977 jailbreak=0.994</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_gate separates benign text    benign=0.002 (margin +0.975)</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>guard probabilities are in [0,1]   5 answers</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_triage returns a full aspect set 5 aspects: churn_risk, frustration, intent, is_urgent, refund_requested</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>triage values are in [0,1]</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_decide routes en billing complaint dept=billing conf=1.000 refund=0.907</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_decide routes ja billing complaint dept=billing conf=0.981 refund=0.992</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_decide routes zh billing complaint dept=billing conf=0.999 refund=0.987</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_route returns a routing decision 4 answers: difficulty, domain, is_sensitive, needs_tools</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>route_step returns a tier from the shared schema tier=economy p=0.522 needs_tools=False sensitive=False</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>route_step tier probabilities are a distribution sum=1.000 probabilities={'economy': 0.522, 'frontier': 0.478}</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>route_step carries the schema digest and the advisory boundary schema=router-v1/e85eb2814e73fc58 advisory=True</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>route_step accepts context and stays answerable tier=frontier p=0.819</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>verify_step returns typed answers with probabilities 5 answers: present_00=True(0.91), present_01=False(0.17), role_present_02=False(0.21), error_present_03=True(0.57), net_added_04=removed_more(0.97)</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>verify_step sends the diff and reports its size diff={'lines': 2, 'chars': 39, 'truncated': False, 'elements_before': 3, 'elements_after': 3}</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>verify_step carries its measured accuracy and its a11y boundary schema=verify-v1 advisory=True</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>laya_classify answers once per item 3/3 items</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>classify labels stay inside the catalog labels: safe_bump, safe_bump, safe_bump</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr class="tot"><td colspan="2"><b>error paths (must be reported, never hang or crash)</b> — 8/8 passed</td></tr><tr><td class="small"><code>rejects unknown question type      returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects question count over the cap returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects unknown preset             returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects classify catalog over 20 labels returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects route_step with an unknown backend returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects route_step with no task    returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects verify_step with no elements returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr><td class="small"><code>rejects verify_step with an unknown backend returned an MCP error</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr><tr class="tot"><td colspan="2"><b>concurrency (one daemon, strict FIFO)</b> — 1/1 passed</td></tr><tr><td class="small"><code>6 parallel calls answer their own questions 6/6 matched</code></td><td style="width:56px"><span class="tick">PASS</span></td></tr></tbody></table></details>
+<p class="small">Two runs were made for this report: <code>26 tool calls, p50 32 ms, max 72 ms</code> and
+<code>26 tool calls, p50 31 ms, max 65 ms</code> — the second is quoted above. Both 32/32. The suite is a
+<b>client of the shipped server</b>, so this is real usage evidence — of the test harness, not of an agent.</p>
+</section>
+<section><div class="head"><div class="n">05</div><h2>Router eval — <code>route_step</code></h2></div>
+<p>73 real steps from this machine (commit subjects, issues, PRs, cron jobs, docs), gold tier labels,
+one shared question schema answered by the local engine and by a hosted chat model.
+Corpus digest <code>73 items / 1a4479f48f6046d1</code>, schema
+<code>router-v1 / e85eb2814e73fc58</code> — identical in all three runs below, so they are comparable.</p>
+<div class="kv">
+  <div class="k">corpus composition</div><div class="v">73 items — 61 tasks,
+    12 questions; tier 38 economy /
+    35 frontier; needs_tools true 62;
+    sensitive true 8 (one labeller, by construction)</div>
+  <div class="k">backends</div><div class="v">laya = Q8_0 via the ggmlc daemon on an RTX 3090 ·
+    frontier = hosted <code>/chat/completions</code> answering the same schema</div>
+</div>
+<h3><code>router-v1</code> — abstract option wording</h3>
+<table><thead><tr><th>backend</th><th>tier accuracy</th><th>95% CI</th><th class="n">economy recall</th>
+  <th class="n">frontier recall</th><th class="n">p50</th><th class="n">p99</th><th class="n">tier ECE</th><th class="n">failures</th></tr></thead>
+<tbody>
+<tr><td>laya (local)</td><td><div class="bar w"><i style="width:45.2%"></i></div><span class="small">61.6%</span></td>
+  <td class="small">[50.2%, 71.9%]</td>
+  <td class="n">28.9%</td>
+  <td class="n"><b>97.1%</b></td>
+  <td class="n"><b>27</b></td>
+  <td class="n"><b>75</b></td>
+  <td class="n">0.148</td>
+  <td class="n"><b>0</b></td></tr>
+<tr><td>hosted</td><td><div class="bar g"><i style="width:56.9%"></i></div><span class="small">69.9%</span></td>
+  <td class="small">[58.6%, 79.2%]</td>
+  <td class="n">78.9%</td>
+  <td class="n">60.0%</td>
+  <td class="n">3,219</td>
+  <td class="n">12,837</td>
+  <td class="n">0.092</td>
+  <td class="n">8</td></tr>
+</tbody></table>
+<div class="grid2">
+<div><table><thead><tr><th>flag question</th><th>backend</th><th class="n">acc</th><th class="n">prec</th><th class="n">recall</th></tr></thead><tbody>
+<tr><td rowspan="2"><code>needs_tools</code></td><td>laya</td><td class="n">0.644</td>
+  <td class="n">0.950</td><td class="n">0.613</td></tr>
+<tr><td>hosted</td><td class="n">0.781</td>
+  <td class="n">0.914</td><td class="n">0.855</td></tr>
+<tr class="tot"><td rowspan="2"><code>sensitive</code></td><td>laya</td><td class="n">0.699</td>
+  <td class="n cross">0.208</td><td class="n">0.625</td></tr>
+<tr><td>hosted</td><td class="n">0.863</td>
+  <td class="n">1.000</td><td class="n">0.750</td></tr>
+</tbody></table>
+<p class="small"><code>sensitive</code> precision <b>0.208</b>:
+of 8 gold-sensitive steps it caught 5 and flagged 24 — 19 false positives. That is why nothing gates on it.</p></div>
+<div><h3 style="margin-top:0">Confusion, laya</h3>
+<table><thead><tr><th>gold ↓ / pred →</th><th class="n">economy</th><th class="n">frontier</th><th class="n">recall</th></tr></thead><tbody>
+<tr><td>economy (38)</td><td class="n">11</td>
+  <td class="n">27</td><td class="n">28.9%</td></tr>
+<tr><td>frontier (35)</td><td class="n">1</td>
+  <td class="n">34</td><td class="n">97.1%</td></tr>
+</tbody></table>
+<p class="small">The error direction is the safe one: when laya is wrong it escalates <i>up</i>
+(27 of 38 economy steps sent to frontier), it does not skip work that needed a frontier model.
+It also means the "saving" is currently a tax.</p></div>
+</div>
+<h3>Paired, on the tier decision</h3>
+<table><thead><tr><th>scope</th><th class="n">n</th><th class="n">both right</th><th class="n">laya only</th>
+  <th class="n">hosted only</th><th class="n">neither</th><th class="n">Δ accuracy</th><th class="n">McNemar exact p</th></tr></thead><tbody>
+<tr><td>all items</td><td class="n">73</td><td class="n">30</td><td class="n">15</td><td class="n">21</td><td class="n">7</td>
+  <td class="n">-8.2%</td>
+  <td class="n"><b>0.405</b> — not separated</td></tr>
+<tr><td>both answered</td><td class="n">65</td><td class="n">30</td><td class="n">12</td><td class="n">21</td><td class="n">2</td>
+  <td class="n">-13.8%</td>
+  <td class="n">0.163 — not separated</td></tr>
+</tbody></table>
+<h3>The wording ablation — <code>router-v1e</code></h3>
+<p>Identical corpus and labels; only <code>tier</code>'s two options gain concrete examples.</p>
+<table><thead><tr><th>schema</th><th class="n">laya</th><th class="n">hosted</th><th class="n">gap</th><th>McNemar</th>
+  <th class="n">laya frontier recall</th></tr></thead><tbody>
+<tr><td><code>router-v1</code> (abstract rule)</td><td class="n">61.6%</td>
+  <td class="n">69.9%</td><td class="n">+8.2 pts hosted</td>
+  <td>p = 0.405 — not separated</td><td class="n">97.1%</td></tr>
+<tr><td><code>router-v1e</code> (examples)</td><td class="n">46.6%</td>
+  <td class="n">72.6%</td><td class="n cross">+26.0 pts hosted</td>
+  <td class="cross">p = 0.011 — separated</td><td class="n">65.7%</td></tr>
+</tbody></table>
+<p>A data edit moved the local model <b>−15 pts</b> and the hosted model +2.7 pts. The mechanism is a
+hypothesis (options share a fixed token budget in the question head), the operational rule is not:
+re-measure wording on your own checkpoint.</p>
+<div class="note warn"><span class="lbl">the third run is not a replication</span>
+<code>laya_vs_gpt5mini_router-v1.json</code> lands on the identical aggregate (0.616 / 0.699, the same 30/15/21/7 counts,
+hence the same p = 0.405) — but the two hosted models disagree with each other on 25 of 73 items, and their
+failure modes differ (9 credit failures vs 8 rate limits). Same counts, different answers: read it as one
+more pairing that fails to separate, <b>not</b> as independent confirmation. The docs were corrected on this
+in e556a19.</div>
+</section>
+<section><div class="head"><div class="n">06</div><h2>verify_step — real accessibility diffs</h2></div>
+<p>20 cua-driver <code>mode='ax'</code> captures already on this machine, paired into 15 same-app
+consecutive pairs — real before/after states, gold derived from the trees rather than authored.
+103 questions per run.</p>
+<table><thead><tr><th>serialisation</th><th>what it looks like</th><th class="n">accuracy (n=103)</th><th class="n">p50</th><th class="n">p99</th></tr></thead><tbody>
+<tr><td><code>labels</code> <span class="small">(default)</span></td><td class="small"><code>+ Error while saving the file</code></td>
+  <td class="n"><div class="bar w"><i style="width:43.1%"></i></div><span class="small">60.2%</span></td><td class="n">36</td><td class="n">239</td></tr>
+<tr><td><code>suffix</code></td><td class="small"><code>Text: Error while saving the file [appeared]</code></td>
+  <td class="n"><div class="bar b"><i style="width:32.0%"></i></div><span class="small">52.4%</span></td><td class="n">41</td><td class="n">293</td></tr>
+<tr><td><code>prose</code></td><td class="small"><code>Labels that appeared on screen: …</code></td>
+  <td class="n"><div class="bar b"><i style="width:29.3%"></i></div><span class="small">50.5%</span></td><td class="n">36</td><td class="n">230</td></tr>
+</tbody></table>
+<p class="small">Dropping the role and keeping only labels is worth <b>+8.7 pts</b> — the same lever that took a
+guard head from 0.03 to 0.998. The whole span is 0.505–0.602: a real lever, not a solution.</p>
+<h3>Against its own baselines</h3>
+<table><thead><tr><th>question kind</th><th class="n">n</th><th class="n">laya</th><th class="n">majority constant</th><th></th></tr></thead>
+<tbody><tr><td><code>present</code></td><td class="n">58</td><td class="n">62.1%</td><td class="n">56.9%</td><td><span class=tick>above</span></td></tr><tr><td><code>role_present</code></td><td class="n">15</td><td class="n">66.7%</td><td class="n">53.3%</td><td><span class=tick>above</span></td></tr><tr><td><code>error_present</code></td><td class="n">15</td><td class="n">60.0%</td><td class="n">73.3%</td><td><span class=cross>below baseline</span></td></tr><tr><td><code>net_added</code></td><td class="n">15</td><td class="n">46.7%</td><td class="n">53.3%</td><td><span class=cross>below baseline</span></td></tr></tbody></table>
+<div class="note bad"><span class="lbl">the sharpest single number here</span>
+Asked "does the current screen contain an error?", the honest constant answer
+(73.3%) beats the model
+(60.0%) — and it stays below baseline in <b>every</b> serialisation
+(46.7%, 46.7%).</div>
+<h3>Laya vs a hosted reader</h3>
+<table><thead><tr><th>backend</th><th>accuracy</th><th>95% CI</th><th class="n">unanswered</th><th class="n">failures</th><th class="n">p50</th></tr></thead><tbody>
+<tr><td>laya (local)</td><td><div class="bar w"><i style="width:43.1%"></i></div><span class="small">60.2%</span></td>
+  <td class="small">[50.5%, 69.1%]</td>
+  <td class="n"><b>0</b></td><td class="n">0</td><td class="n"><b>36</b></td></tr>
+<tr><td>hosted</td><td><div class="bar g"><i style="width:50.1%"></i></div><span class="small">65.0%</span></td>
+  <td class="small">[55.5%, 73.6%]</td>
+  <td class="n">16</td><td class="n">14</td>
+  <td class="n">21,939</td></tr>
+</tbody></table>
+<p>Paired discordance: <b>43 both right, 19 laya-only, 24 hosted-only, 17 neither — McNemar p = 0.542</b>.
+A 4.8-point gap on 103 items is a coin flip, and the per-kind split says why they tie: the hosted reader is
+much better at <i>reading a label</i> and worse at <i>properties of the whole tree</i>, and it failed 14 items by
+not answering at all (counted as misses). Step 1's shape again, on a harder task — 600× cheaper in wall clock,
+same verdict: <b>advisory, not a gate</b>.</p>
+<h3>The two arms that failed</h3>
+<table><thead><tr><th>artifact</th><th class="n">hosted failures</th><th>what it actually records</th></tr></thead><tbody>
+<tr><td><code>verify_laya_vs_agnes.json</code></td><td class="n cross">103 / 103</td><td class="small">a provider outage (frontier quota exhausted) — kept deliberately as the record that four providers were tried before the fifth worked</td></tr><tr><td><code>verify_laya_vs_longcat.json</code></td><td class="n cross">103 / 103</td><td class="small">a provider outage (frontier quota exhausted) — kept deliberately as the record that four providers were tried before the fifth worked</td></tr>
+</tbody></table>
+<div class="note warn"><span class="lbl">do not quote these p-values</span>
+Both files carry a <code>paired</code> block reporting <b>p ≈ 0</b> over an arm that answered nothing
+(items both answered — a scope string the harness no longer emits). A McNemar between a
+working engine and a provider that failed 103 of 103 calls measures the outage, not the models. The artifacts
+are left as written and explained rather than patched; the docs now name the trap
+(9b24117).</p></div>
+<h3>Where the tokens go</h3>
+<p class="small">The encoder's cost is <code>questions × (state + question text)</code>, not state + questions —
+the state is re-read per question. 7 questions on a 1,606-char diff ≈ <b>4,600</b> input tokens; 7 questions on a
+92-char diff still ≈ <b>1,072</b>; <b>95.1%</b> of calls exceed the documented 768-token state budget. Hence the
+shipped advice: ask few, terse questions per call. That is also why <code>verify_step</code>'s own MCP latency is
+not the whole story — its cost is in the question text, not the diff.</p>
+</section>
+<section><div class="head"><div class="n">07</div><h2>Findings to review</h2></div>
+<p>Ordered by what I would fix first. Nothing here is a claim about accuracy — that is sections 05–06.</p>
+<ol class="findings">
+<li><b>No usage telemetry exists, so "usage" cannot be measured from logs.</b><span class="sev hi">high</span>
+  The only counter is <code>laya_health</code>'s <code>calls</code> field, which is an in-process integer
+  (<code>laya_mcp_server.py</code>: <code>self._calls = 0</code>) that dies with the process — the
+  17 restarts in this window each reset it to zero, and MCP tool calls are never persisted
+  anywhere. A one-line JSONL append in the tool wrapper (name, ms, question count, outcome) would make the next
+  report answer the actual question: who calls this, how often, how fast, and does it ever fail.</li>
+<li><b>Zero recorded agent invocations in 58,864 stored messages.</b><span class="sev hi">high</span>
+  Every quality number in this report comes from eval harnesses; the tools have been discovered and registered
+  5 times but never driven by a model in a real turn (as far as Hermes' store shows — OpenClaw keeps no
+  tool-call log, so it is unmeasurable there). Consistent with that: since the engine child is spawned
+  lazily on the first daemon-touching call, an unused server leaves <b>no engine process and no indirect
+  trace</b> either (measured — section 02). Before adding a ninth tool, I would spend one session actually
+  using the eight that exist, because the router/verify verdicts were derived from offline corpora, not from
+  decisions the agent needed.</li>
+<li><b><code>smoke.log</code> in the repo root is stale and contradicts the suite.</b><span class="sev md">medium</span>
+  It says <i>"six tools"</i>, <i>21/21 passed</i>, <i>19 tool calls; after warm-up p50=31 ms, max=62 ms, total=2069 ms</i> and is dated
+  2026-09-24 12:15:07. <code>tests/smoke_mcp.py</code> now asserts <b>8 tools</b> and today's run
+  is <b>32/32 passed</b> / 32 assertions. Either re-capture it or delete it — a stale green log at the
+  repo root is the artifact a reader trusts first.</li>
+<li><b>Documented test counts drifted (21/21 passed → 27/27 → 32/32).</b><span class="sev md">medium</span>
+  <code>docs/router-service.md</code> states "27/27 passed" and "Tools discovered: 7"; the suite asserts
+  8 tools and 32 assertions as of this run, and
+  96cb0f9 already had to correct a tool count in the design notes. Referencing the
+  command instead of the count would stop this recurring.</li>
+<li><b>Both harness configs carry env for tools that no longer exist.</b><span class="sev md">medium</span>
+  <code>~/.hermes/config.yaml</code> and <code>~/.openclaw/openclaw.json</code> both set
+  <code>LAYA_BROWSER_DIR=G:/dev/AI/laya/laya-browser/v10s</code> and <code>LAYA_BROWSER_PYTHON</code>, pointing at a
+  browser-agent worker that is not in the repo and registers no tool. Dead config that reads like a feature.</li>
+<li><b>Two of the three shipped tools are already declining to be trusted, in their own descriptions.</b><span class="sev md">medium</span>
+  <code>route_step</code> and <code>verify_step</code> both embed <code>advisory: true</code>, a boundary string and
+  their measured accuracy in every payload — good practice, but it means an agent reading a confident
+  <code>sensitive: true</code> (precision 0.208) has no signal
+  in-band that it is close to a coin flip. If these stay advisory, the confidence values probably need a
+  calibrating refit before anything reads them as numbers rather than hints.</li>
+<li><b>Calibration is untuned, and one field is actively misleading.</b><span class="sev lo">low</span>
+  Tier ECE 0.148 with the stock checkpoint, and per
+  <code>docs/router-service.md</code> §4 the daemon reported <code>confidence = 0.0033</code> on a two-option
+  <code>choice</code> while its options sat at 0.466/0.534 (that one is a doc figure — I did not re-measure it).
+  The eval scores ECE from <code>probabilities</code> for exactly this reason, so anything consuming
+  <code>confidence</code> directly is reading the wrong field.</li>
+<li><b>Headroom's crash loop is a bigger log problem than anything Laya does.</b><span class="sev lo">low</span>
+  <code>mcp-stderr.log</code> is 204 MB, and <b>95,709</b> of its start banners are <code>headroom</code>
+  (<code>ImportError: MCP SDK not installed</code> on repeat). It makes every grep in this report slower and forces
+  rotation; unrelated to Laya, but it is why the MCP log is unreadable at a glance.</li>
+</ol>
+</section>
+<section><div class="head"><div class="n">08</div><h2>Reproducing this report</h2></div>
+<pre><span class="c"># the live half (needs the engine + GPU; ~5 s warm)</span>
+cd G:/dev/AI/laya_mcp
+LAYA_EXE=G:/dev/AI/laya/layabin/laya.exe \
+  LAYA_MODEL=G:/dev/AI/laya/laya_multilingual_q8_0.gguf \
+  G:/dev/AI/laya/mcp-venv/Scripts/python.exe tests/smoke_mcp.py
+
+<span class="c"># the offline half — router + verify evals, no GPU contention on the numbers</span>
+python -m laya_router.eval --backends "laya" --out laya_router/data/results/local.json
+python probes/a11y_diff_probe.py --variant labels
+
+<span class="c"># the log scan that produced sections 01–03</span>
+python C:/Users/Nasal/AppData/Local/hermes/cache/scratch/laya_usage_scan.py digest.json</pre>
+<p class="small">The scan script and its digest JSON are in the Hermes scratch dir, not the repo. No engine
+weights, capture text or screen content appear in either — the results files hold kinds, gold and predicted
+values only, which is why this report can quote them.</p>
+<div class="kv">
+  <div class="k">repo head</div><div class="v"><code>9b24117</code> Name the misleading paired block in the two failed hosted arms</div>
+  <div class="k">uncommitted in tree</div><div class="v">?? docs/macos-mlx-backend.md; ?? docs/macos-performance.md; ?? probes/mlx_schema_probe.py; ?? reports/</div>
+  <div class="k">report artifact</div><div class="v">untracked, generated 2026-09-25 19:47:18 — safe to delete</div>
+</div>
+</section>
+
+<footer>
+  Generated 2026-09-25 19:47:18 from C:/Users/Nasal/AppData/Local/hermes/logs/mcp-stderr.log (204 MB) ·
+  C:/Users/Nasal/AppData/Local/hermes/state.db · G:/dev/AI/laya/logs/serve-autostart.log · 9 committed eval artifacts ·
+  one live run of <code>tests/smoke_mcp.py</code>.<br>
+  Figures are checkpoint-specific (Q8_0 multilingual, ggmlc, RTX 3090). Upstream 0.82/0.04 became 0.67/0.20 on
+  this engine — re-measure before quoting any number here.
+</footer>
+</div></body></html>

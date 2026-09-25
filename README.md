@@ -76,6 +76,7 @@ All configuration is environment variables — no config file, no editing source
 | `LAYA_DEVICE` | `auto` | `auto` \| `cuda` \| `cpu` \| `metal` |
 | `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever) |
 | `LAYA_TIMEOUT_MS` | `30000` | Per-call timeout; a hung engine returns an error instead of wedging the agent |
+| `LAYA_USAGE_LOG` | `~/.laya-mcp/usage.jsonl` | JSONL file, one record per tool call, or `off` to disable. Counts and durations only — never the state text |
 | `LAYA_BROWSER_DIR` | — | Browser-agent checkpoint directory; **enables `laya_browser_act`** |
 | `LAYA_BROWSER_PYTHON` | guessed: `<dir>/../.venv/Scripts/python.exe` | The SDK venv (torch + `laya`) that runs the browser checkpoint |
 | `LAYA_BROWSER_DEVICE` | `cuda` | `auto` \| `cuda` \| `cuda:1` \| `cpu` |
@@ -100,10 +101,11 @@ python laya_mcp_server.py --check
 
 ```
 laya-mcp 0.2.0
-  LAY_EXE         = 'C:\\ggmlc\\laya.exe'
-  LAY_MODEL       = 'C:\\models\\laya_multilingual_q8_0.gguf'
+  LAYA_EXE        = 'C:\\ggmlc\\laya.exe'
+  LAYA_MODEL      = 'C:\\models\\laya_multilingual_q8_0.gguf'
   ...
 OK  backend answered (cold 1388 ms, warm 11 ms)
+  usage log: C:\Users\you\.laya-mcp\usage.jsonl (0 record(s), 0 failed)
   jailbreak          P(true)=0.995
   prompt_injection   P(true)=0.896
   ...
@@ -111,7 +113,7 @@ OK  backend answered (cold 1388 ms, warm 11 ms)
 
 `--check` starts the backend, runs one injection fixture through the guard preset and prints the
 numbers. If it fails it says exactly what is missing. No agent required. `python laya_mcp_server.py
---check-browser` does the same for the browser backend: it loads the checkpoint, reports the load
+`--check-browser` does the same for the browser backend: it loads the checkpoint, reports the load
 time and makes one real decision.
 
 ```bash
@@ -121,15 +123,48 @@ python tests/smoke_mcp.py                      # end-to-end over stdio, needs LA
 
 `tests/smoke_mcp.py` drives the server as an MCP **client** over stdio — the same path an agent
 harness uses — so it covers transport, tool dispatch and the daemon child as well: every tool,
-four error paths, a two-sided injection/benign separation check, six concurrent calls (to prove
-responses are not crossed on the single FIFO daemon), and a latency summary. Accuracy assertions
+the error paths (rejected arguments, an unconfigured backend), a two-sided injection/benign
+separation check, six concurrent calls (to prove responses are not crossed on the single FIFO
+daemon), and a latency summary. With `LAYA_BROWSER_DIR` set it also makes one real browser
+decision and re-checks that the ggmlc path still answers in the same process afterwards. Accuracy assertions
 are shape-level on purpose: the stock checkpoints are near chance on zero-shot typed decisions,
 so a suite asserting labels would be red for reasons unrelated to the server.
 
+## Measuring usage
+
+Every tool call appends one record to `$LAYA_USAGE_LOG` (default `~/.laya-mcp/usage.jsonl`):
+
+```json
+{"ts": "2026-09-25T20:24:48", "tool": "laya_gate", "ms": 93.8, "ok": true, "pid": 65224,
+ "seq": 2, "chars": 51}
+```
+
+`tool`, wall `ms`, `ok`, the process it answered on, and that call's shape — a question count, a
+character count, a backend name. Failures record the exception text, because a rejected call is the
+interesting one. **The text never goes in the file**: `laya_gate` exists to screen untrusted input,
+so a log holding that input would be the leak it screens for. There is a test for that.
+
+```bash
+wc -l ~/.laya-mcp/usage.jsonl                              # how many calls, ever
+python -c "import json,collections;print(collections.Counter(json.loads(l)['tool'] for l in open('$HOME/.laya-mcp/usage.jsonl')))"
+```
+
+`laya_health` reports the same totals in its `usage` block — path, record count, failure count and
+the last timestamp — so an agent can answer "has anything ever called this?" without shell access.
+Its `calls` field counts the **current process only** and resets on every restart; `usage` is the
+part that survives. Set `LAYA_USAGE_LOG=off` to write nothing at all.
+
+Logging costs ~0.35 ms per call (p50, 500 calls, no engine): it is one append, outside the daemon
+call, and a failure to write is swallowed so a full disk cannot fail a decision.
+
 ## Tools
 
-Seven tools, deliberately — six on the ggmlc engine, one on the browser checkpoint. Tool-selection
-quality in an agent collapses past roughly this many.
+Nine tools, deliberately: **eight answer from the ggmlc engine** (the five presets, the two
+measured step tools and health) and **one from the browser checkpoint** (`laya_browser_act`).
+Tool-selection quality in an agent collapses past roughly this many, so the descriptions are kept
+short and mutually exclusive. `route_step` and `verify_step` arrived with steps 2 and 3 of the
+computer-use integration (issue #3), and `verify_step` carries its measured accuracy in its own
+description because its answers sit near the baseline.
 
 | Tool | Signature | Returns |
 |---|---|---|
@@ -138,8 +173,18 @@ quality in an agent collapses past roughly this many.
 | `laya_triage` | `(text)` | intent, urgency, frustration, refund, churn |
 | `laya_route` | `(task)` | difficulty, model tier, needs-tools, needs-human, act/escalate |
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
-| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, call count, browser state |
-| `laya_browser_act` | `(goal, elements, page_text, page_url?, page_title?, recent_actions?, text_fields?, rules?)` | Next browser operation + the element to act on (browser checkpoint) |
+| `route_step` | `(task, context?, backend?, timeout_ms?)` | `tier` (economy/frontier) + `needs_tools` + `sensitive` from the committed schema, with the schema digest and an advisory marker |
+| `verify_step` | `(before, after, backend?, max_lines?, timeout_ms?)` | Typed answers (yes/no, closed choice) about an accessibility diff, each with its probability — measured at 0.602 on 103 real diffs, so it is evidence, not a gate |
+| `laya_browser_act` | `(goal, elements, page_text, page_url?, page_title?, recent_actions?, text_fields?, rules?)` | Next browser operation + the element to act on, from the browser checkpoint |
+| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, process-local `calls`, the durable `usage` totals, and the browser backend's configured/running state |
+
+`laya_route` (the preset router) stays for the preset's opinion and for existing callers.
+
+`route_step` answers `laya_router/data/questions.json` verbatim — the same question the HTTP service
+serves and the published eval in [`docs/router-service.md`](docs/router-service.md) measures — so its
+accuracy is a number you can check rather than a claim. It is advisory: it decides *which model
+should do the work*, never whether an action is allowed, and it cannot see instructions rendered into
+an image on screen.
 
 ```jsonc
 // laya_decide example
@@ -197,6 +242,9 @@ head budget, so keep the list you send under ~96 and prefer the region of the pa
 in over the whole tree. Unlike the stock multilingual model this checkpoint *is* fine-tuned for its
 task, but a low operation confidence is still a reason to re-observe the page rather than guess.
 
+The measurements this PR reports — the sample goal, a real search page, and a game loop — are
+reproduced in [`probes/browser_act_probe.py`](probes/browser_act_probe.py).
+
 ## Wiring it into an agent harness
 
 ### Hermes
@@ -219,7 +267,7 @@ written**; it needs a real terminal.) Then:
 
 ```bash
 hermes mcp list            # laya  ...  ✓ enabled
-hermes mcp test laya       # Connected, 7 tools
+hermes mcp test laya       # Connected, 9 tools
 ```
 
 Or hand-write the entry in `config.yaml`:
@@ -234,10 +282,6 @@ mcp_servers:
       LAYA_MODEL: /abs/path/laya_multilingual_q8_0.gguf
       LAYA_DEVICE: auto
       LAYA_CUDA_GRAPH: "1"
-      # optional browser backend (omit to leave laya_browser_act unconfigured)
-      LAYA_BROWSER_DIR: /abs/path/laya-browser/v10s
-      LAYA_BROWSER_PYTHON: /abs/path/.venv/Scripts/python.exe
-      LAYA_BROWSER_DEVICE: cuda
     enabled: true
     connect_timeout: 90
 ```
@@ -261,10 +305,7 @@ server via `enabled_toolsets: ["terminal", "web", "laya"]`. A job restricted to
           "LAYA_EXE": "/abs/path/laya.exe",
           "LAYA_MODEL": "/abs/path/laya_multilingual_q8_0.gguf",
           "LAYA_DEVICE": "auto",
-          "LAYA_CUDA_GRAPH": "1",
-          "LAYA_BROWSER_DIR": "/abs/path/laya-browser/v10s",
-          "LAYA_BROWSER_PYTHON": "/abs/path/.venv/Scripts/python.exe",
-          "LAYA_BROWSER_DEVICE": "cuda"
+          "LAYA_CUDA_GRAPH": "1"
         }
       }
     }
@@ -308,6 +349,20 @@ only make you more conservative: on disagreement, or confidence < 0.70, downgrad
 "needs human review". Never merge on the strength of its answer.
 ```
 
+### Install it as an agent skill
+
+The procedure above, packaged for an agent to run itself instead of an operator to read:
+[`skills/setup-laya/SKILL.md`](skills/setup-laya/SKILL.md) detects the harness, checks the binary and
+the GGUF, verifies with `--check`, registers the server, installs the call policy, and then drives all
+eight tools with the usage log as the acceptance test. An agent that does not read skills gets the
+same six steps as one paste-able prompt in
+[`skills/setup-laya/references/operator-prompt.md`](skills/setup-laya/references/operator-prompt.md).
+It is also the missing half of the tool-selection question in [issue #12][issue12]: the descriptions
+are only proven or found misleading when something calls them, so the skill's last step is a
+recorded call rather than a registration.
+
+[issue12]: https://github.com/fuleinist/laya_mcp/issues/12
+
 ## Running the engine resident (optional)
 
 The MCP server spawns its **own** `laya daemon` child on first use — an MCP stdio server cannot
@@ -321,9 +376,57 @@ a hidden, idempotent launcher for the Windows Startup folder (~260 MiB VRAM resi
 with `base_url=http://127.0.0.1:8131`. Note that the published model card mentions
 `/api/decide`; the shipped binary serves `/v1/systemone`, and `/api/decide` 404s.
 
+## The router service (step 1 of the computer-use integration)
+
+`laya_router/` answers one question about a step *before* it runs: does this need the frontier
+model, and is it sensitive? It is the first build step of [issue #3][issue3] — pure classification
+over a task description, no screen integration — because that is the cheap way to find out whether
+the local checkpoint earns a seat on the critical path.
+
+Two tiers, not three: the base checkpoint's middle-tier recall is 0.13 upstream, so the middle
+belongs in an *escalation* decision, not a label it has to predict. One question schema
+(`laya_router/data/questions.json`) is answered verbatim by both backends — the local ggmlc daemon
+and any OpenAI-compatible chat endpoint — so the comparison is paired item-for-item.
+
+```bash
+python -m laya_router.service --port 8760                     # Laya only
+python -m laya_router.service --port 8760 \
+  --frontier 'openai:https://openrouter.ai/api/v1|openai/gpt-5-mini|OPENROUTER_API_KEY'
+
+curl 'http://127.0.0.1:8760/health'
+curl 'http://127.0.0.1:8760/questions'
+curl 'http://127.0.0.1:8760/route?task=Cut+a+release+and+publish+the+artifacts'
+```
+
+`/route` returns `tier`, `needs_tools`, `sensitive`, the tier probabilities, latency, and
+`advisory: true`. Nothing here blocks an action: the corpus and the paired numbers in
+[`docs/router-service.md`](docs/router-service.md) are what decide whether it ever should. A
+text-channel decision cannot see instructions rendered into an *image* on screen — that boundary is
+restated in every `/route` reply, because it is the one place a caller might mistake this for a
+complete defence.
+
+Measure it yourself on the committed corpus — real work items from this machine's own repositories
+and schedules ([`laya_router/data/CORPUS.md`](laya_router/data/CORPUS.md) records where each line
+came from):
+
+```bash
+python -m laya_router.eval --backends "laya,openai:<base_url>|<model>|<KEY_ENV>" \
+  --out laya_router/data/results/run.json
+```
+
+[issue3]: https://github.com/fuleinist/laya_mcp/issues/3
+
 ## Honest limits
 
 Read this before gating anything on a probability.
+
+- **Nothing in the computer-use path gates.** `route_step` and `verify_step` both return
+  `advisory: true` with a `boundary` string on every call, and both carry their measured accuracy:
+  `verify_step` is 0.602 overall on 103 real diffs against a 0.569 majority-class baseline, and
+  *below* the baseline on the "did an error appear" question. An accessibility diff cannot see an
+  instruction rendered as pixels, so neither tool is allowed to be the thing that decides a step
+  succeeded — see [`docs/verify-step.md`](docs/verify-step.md) and
+  [`docs/computer-use.md`](docs/computer-use.md) §6.
 
 - **The checkpoints ship uncalibrated.** `temperature = [1.0, 1.0, 1.0]`, no per-option-count
   buckets, systematically over-confident (mean confidence 0.75-0.83 against far lower accuracy).
@@ -375,7 +478,11 @@ transport. Model: 345 MB on disk, ~260 MiB VRAM resident (the PyTorch path costs
   from wedging the agent.
 - **Validation is client-side** because the daemon degrades unknown question types to an empty
   `choice` silently — a worse failure than a loud error.
-- **Seven tools**, not thirty, for tool-selection quality.
+- **Eight tools**, not thirty, for tool-selection quality. Each addition has to earn its place:
+  `route_step` did, because it is the measured router; `verify_step` did, because a typed reading of
+  an accessibility diff is the only way to ask "did that step work?" without handing a planner 12k
+  tokens of screen text — and every description says what its tool is *not* for, including how
+  accurate its answers have been measured to be.
 
 ## Credits and license
 

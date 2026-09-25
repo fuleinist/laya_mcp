@@ -100,13 +100,14 @@ async def run(server: str) -> int:
             t0 = time.time()
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
-            record("tools/list returns the documented tools", len(names) == 7, f"{len(names)}: {', '.join(names)}")
+            record("tools/list returns nine tools", len(names) == 9, f"{len(names)}: {', '.join(names)}")
             record("every tool has a description",
                    all((t.description or "").strip() for t in tools),
                    f"{sum(1 for t in tools if (t.description or '').strip())}/{len(tools)} documented")
             record("handler for every advertised tool",
                    set(names) == {"laya_decide", "laya_gate", "laya_triage", "laya_route",
-                                  "laya_classify", "laya_browser_act", "laya_health"},
+                                  "laya_classify", "laya_health", "route_step", "verify_step",
+                                  "laya_browser_act"},
                    "names match the README")
             print(f"          (handshake + list_tools in {(time.time() - t0) * 1000:.0f} ms)")
 
@@ -151,6 +152,59 @@ async def run(server: str) -> int:
             rt = parse(await call(session, "laya_route", {"task": "Summarise 400 dependency PR diffs and merge the safe ones."}))
             record("laya_route returns a routing decision", bool(rt.get("answers")),
                    f"{len(rt.get('answers') or {})} answers: {', '.join(sorted(rt.get('answers') or {}))}")
+
+            # route_step (issue #3, step 2): the measured, schema-driven router, called over the
+            # same stdio transport both harnesses use.
+            step = parse(await call(session, "route_step",
+                                    {"task": "Bump five devDependencies in the workspace."}))
+            record("route_step returns a tier from the shared schema",
+                   step.get("tier") in {"economy", "frontier"},
+                   f"tier={step.get('tier')} p={step.get('tier_prob'):.3f} "
+                   f"needs_tools={step.get('needs_tools')} sensitive={step.get('sensitive')}")
+            probs_sum = sum((step.get("tier_probabilities") or {}).values())
+            record("route_step tier probabilities are a distribution",
+                   abs(probs_sum - 1.0) < 0.05 and 0.0 <= (step.get("tier_prob") or 0) <= 1.0,
+                   f"sum={probs_sum:.3f} probabilities={step.get('tier_probabilities')}")
+            record("route_step carries the schema digest and the advisory boundary",
+                   bool(step.get("schema_digest")) and step.get("advisory") is True
+                   and "image" in str(step.get("boundary")),
+                   f"schema={step.get('schema_version')}/{step.get('schema_digest')} "
+                   f"advisory={step.get('advisory')}")
+            design = parse(await call(session, "route_step",
+                                      {"task": "Design a computer-use API and its tier ladder.",
+                                       "context": "the local engine must stay on the critical path"}))
+            record("route_step accepts context and stays answerable",
+                   design.get("tier") in {"economy", "frontier"},
+                   f"tier={design.get('tier')} p={design.get('tier_prob'):.3f}")
+
+            # verify_step (issue #3, step 3): typed answers about a real diff, over stdio. The two
+            # captures below are synthetic on purpose — the smoke suite must not need a screen — and
+            # the answers are checked for shape and closure, never for correctness (that is measured
+            # in docs/verify-step.md, and asserting accuracy here would smuggle a claim into a smoke
+            # test).
+            before_ax = {"app": "smoke.exe", "window_title": "smoke", "elements": [
+                {"role": "Button", "label": "Refresh"}, {"role": "Text", "label": "Ready"},
+                {"role": "Text", "label": "3 items"}]}
+            after_ax = {"app": "smoke.exe", "window_title": "smoke", "elements": [
+                {"role": "Button", "label": "Refresh"}, {"role": "Text", "label": "Ready"},
+                {"role": "Text", "label": "Error while saving the file"}]}
+            ver = parse(await call(session, "verify_step",
+                                   {"before": json.dumps(before_ax), "after": json.dumps(after_ax)}))
+            answers = ver.get("answers") or []
+            record("verify_step returns typed answers with probabilities",
+                   bool(answers) and all(a.get("type") in ("noul", "choice")
+                                         and isinstance(a.get("value"), (bool, str))
+                                         and (a.get("prob") is None or 0.0 <= a["prob"] <= 1.0)
+                                         for a in answers),
+                   f"{len(answers)} answers: "
+                   + ", ".join(f"{a['id']}={a['value']}({a['prob']:.2f})" for a in answers[:5]))
+            record("verify_step sends the diff and reports its size",
+                   ver.get("diff", {}).get("lines", 0) >= 1
+                   and (ver.get("diff") or {}).get("elements_after") == 3,
+                   f"diff={ver.get('diff')}")
+            record("verify_step carries its measured accuracy and its a11y boundary",
+                   "0.602" in str(ver.get("measured")) and "pixels" in str(ver.get("boundary")),
+                   f"schema={ver.get('schema_version')} advisory={ver.get('advisory')}")
 
             cat = {"security_fail": "code execution, leakage, unpinned scripts",
                    "ci_fail": "failing checks", "safe_bump": "focused version bump only"}
@@ -233,6 +287,16 @@ async def run(server: str) -> int:
                  ("laya_decide", {"state": "x", "questions": {}, "preset": "not-a-preset"})),
                 ("classify catalog over 20 labels",
                  ("laya_classify", {"items": ["a"], "catalog": {f"l{i}": "x" for i in range(21)}})),
+                ("route_step with an unknown backend",
+                 ("route_step", {"task": "a task", "backend": "gpt-5"})),
+                ("route_step with no task",
+                 ("route_step", {"task": "  "})),
+                ("verify_step with no elements",
+                 ("verify_step", {"before": "{\"elements\": []}", "after": "{}"})),
+                ("verify_step with an unknown backend",
+                 ("verify_step", {"before": "{}", "after": "{}", "backend": "gpt-5"})),
+                ("laya_browser_act with no candidates",
+                 ("laya_browser_act", {"goal": "find the pricing page", "elements": []})),
             ]
             for label, (tool, args) in bads:
                 try:
