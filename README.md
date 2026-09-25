@@ -286,6 +286,20 @@ only make you more conservative: on disagreement, or confidence < 0.70, downgrad
 "needs human review". Never merge on the strength of its answer.
 ```
 
+### Install it as an agent skill
+
+The procedure above, packaged for an agent to run itself instead of an operator to read:
+[`skills/setup-laya/SKILL.md`](skills/setup-laya/SKILL.md) detects the harness, checks the binary and
+the GGUF, verifies with `--check`, registers the server, installs the call policy, and then drives all
+eight tools with the usage log as the acceptance test. An agent that does not read skills gets the
+same six steps as one paste-able prompt in
+[`skills/setup-laya/references/operator-prompt.md`](skills/setup-laya/references/operator-prompt.md).
+It is also the missing half of the tool-selection question in [issue #12][issue12]: the descriptions
+are only proven or found misleading when something calls them, so the skill's last step is a
+recorded call rather than a registration.
+
+[issue12]: https://github.com/fuleinist/laya_mcp/issues/12
+
 ## Running the engine resident (optional)
 
 The MCP server spawns its **own** `laya daemon` child on first use — an MCP stdio server cannot
