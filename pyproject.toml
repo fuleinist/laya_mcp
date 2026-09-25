@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laya-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server exposing the Laya System-1 decision engine (Jev) as agent tools"
 readme = "README.md"
 requires-python = ">=3.10"

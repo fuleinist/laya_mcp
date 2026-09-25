@@ -76,6 +76,7 @@ All configuration is environment variables — no config file, no editing source
 | `LAYA_DEVICE` | `auto` | `auto` \| `cuda` \| `cpu` \| `metal` |
 | `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever) |
 | `LAYA_TIMEOUT_MS` | `30000` | Per-call timeout; a hung engine returns an error instead of wedging the agent |
+| `LAYA_USAGE_LOG` | `~/.laya-mcp/usage.jsonl` | JSONL file, one record per tool call, or `off` to disable. Counts and durations only — never the state text |
 
 Put English **and** multilingual GGUFs in `LAYA_MODELS_DIR` and mixed-language traffic stops
 paying a checkpoint swap: routing is decided from the **script of the input, before the forward
@@ -89,11 +90,12 @@ python laya_mcp_server.py --check
 ```
 
 ```
-laya-mcp 0.1.0
-  LAY_EXE         = 'C:\\ggmlc\\laya.exe'
-  LAY_MODEL       = 'C:\\models\\laya_multilingual_q8_0.gguf'
+laya-mcp 0.2.0
+  LAYA_EXE        = 'C:\\ggmlc\\laya.exe'
+  LAYA_MODEL      = 'C:\\models\\laya_multilingual_q8_0.gguf'
   ...
 OK  backend answered (cold 1388 ms, warm 11 ms)
+  usage log: C:\Users\you\.laya-mcp\usage.jsonl (0 record(s), 0 failed)
   jailbreak          P(true)=0.995
   prompt_injection   P(true)=0.896
   ...
@@ -114,6 +116,33 @@ responses are not crossed on the single FIFO daemon), and a latency summary. Acc
 are shape-level on purpose: the stock checkpoints are near chance on zero-shot typed decisions,
 so a suite asserting labels would be red for reasons unrelated to the server.
 
+## Measuring usage
+
+Every tool call appends one record to `$LAYA_USAGE_LOG` (default `~/.laya-mcp/usage.jsonl`):
+
+```json
+{"ts": "2026-09-25T20:24:48", "tool": "laya_gate", "ms": 93.8, "ok": true, "pid": 65224,
+ "seq": 2, "chars": 51}
+```
+
+`tool`, wall `ms`, `ok`, the process it answered on, and that call's shape — a question count, a
+character count, a backend name. Failures record the exception text, because a rejected call is the
+interesting one. **The text never goes in the file**: `laya_gate` exists to screen untrusted input,
+so a log holding that input would be the leak it screens for. There is a test for that.
+
+```bash
+wc -l ~/.laya-mcp/usage.jsonl                              # how many calls, ever
+python -c "import json,collections;print(collections.Counter(json.loads(l)['tool'] for l in open('$HOME/.laya-mcp/usage.jsonl')))"
+```
+
+`laya_health` reports the same totals in its `usage` block — path, record count, failure count and
+the last timestamp — so an agent can answer "has anything ever called this?" without shell access.
+Its `calls` field counts the **current process only** and resets on every restart; `usage` is the
+part that survives. Set `LAYA_USAGE_LOG=off` to write nothing at all.
+
+Logging costs ~0.35 ms per call (p50, 500 calls, no engine): it is one append, outside the daemon
+call, and a failure to write is swallowed so a full disk cannot fail a decision.
+
 ## Tools
 
 Eight tools. Tool-selection quality in an agent collapses past roughly this many, so the descriptions
@@ -130,7 +159,7 @@ accuracy in its own description because its answers sit near the baseline.
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
 | `route_step` | `(task, context?, backend?, timeout_ms?)` | `tier` (economy/frontier) + `needs_tools` + `sensitive` from the committed schema, with the schema digest and an advisory marker |
 | `verify_step` | `(before, after, backend?, max_lines?, timeout_ms?)` | Typed answers (yes/no, closed choice) about an accessibility diff, each with its probability — measured at 0.602 on 103 real diffs, so it is evidence, not a gate |
-| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, call count |
+| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, process-local `calls`, and the durable `usage` totals |
 
 `laya_route` (the preset router) stays for the preset's opinion and for existing callers.
 

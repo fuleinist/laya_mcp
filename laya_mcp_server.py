@@ -30,12 +30,16 @@ Environment
   LAYA_DEVICE      auto | cpu | cuda | metal                          (default: auto)
   LAYA_CUDA_GRAPH  "1" to capture a CUDA graph for the live shape     (default: 1)
   LAYA_TIMEOUT_MS  per-call timeout in ms                             (default: 30000)
+  LAYA_USAGE_LOG   JSONL file to append one record per tool call, or `off`
+                   to disable. Records counts and durations, never the
+                   state text. (default: ~/.laya-mcp/usage.jsonl)
 
 Run `laya-mcp --check` to validate the configuration end to end without an agent.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import queue
@@ -48,7 +52,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 PRESETS = ("email", "triage", "guard", "moderation", "router", "expense", "security",
            "invoice", "customer_service", "harness")
@@ -75,6 +79,161 @@ FAMILY = os.environ.get("LAYA_FAMILY", "auto").strip() or "auto"
 DEVICE = os.environ.get("LAYA_DEVICE", "auto").strip() or "auto"
 TIMEOUT_MS = int(os.environ.get("LAYA_TIMEOUT_MS", "30000"))
 CUDA_GRAPH = os.environ.get("LAYA_CUDA_GRAPH", "1").strip() not in ("0", "", "false", "False")
+
+# --- usage log ---------------------------------------------------------------
+# Before this existed there was no way to answer "has anything ever called these tools?" from disk:
+# `laya_health`'s `calls` field is an in-process integer that dies with the server, and the engine's
+# own `usage` block is discarded once the reply is formatted. One JSON line per call, counts and
+# durations only — never the state text, so this file cannot become a copy of the untrusted text the
+# caller was screening. See issue #11.
+
+DEFAULT_USAGE_LOG = os.path.join(os.path.expanduser("~"), ".laya-mcp", "usage.jsonl")
+
+
+def _resolve_usage_log() -> str | None:
+    """`LAYA_USAGE_LOG` unset -> the default path; `off`/`none`/`0` -> logging disabled."""
+    raw = os.environ.get("LAYA_USAGE_LOG", "").strip()
+    if not raw:
+        return DEFAULT_USAGE_LOG
+    if raw.lower() in ("off", "none", "false", "no", "0"):
+        return None
+    return os.path.expanduser(raw)
+
+
+USAGE_LOG = _resolve_usage_log()
+
+
+def _size(value: Any) -> int:
+    """Character count of a state argument — the size without keeping the text."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return len(str(value))
+
+
+def _usage_record(tool: str, ms: float, ok: bool, error: str | None,
+                  shape: dict[str, Any]) -> None:
+    """Append one record per tool call. Sizes and counts only — never state or answers.
+
+    Never raises: an unwritable path must not turn a working tool call into a failed one.
+    """
+    path = USAGE_LOG
+    if not path:
+        return
+    record: dict[str, Any] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "tool": tool,
+        "ms": round(ms, 1),
+        "ok": ok,
+        "pid": os.getpid(),
+        "seq": DAEMON.calls,
+    }
+    if error:
+        record["error"] = error
+    record.update(shape)
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _usage_summary() -> dict[str, Any]:
+    """Durable totals for `laya_health`: path, records, errors and the last timestamp."""
+    path = USAGE_LOG
+    if not path:
+        return {"enabled": False, "log": None, "records": 0, "errors": 0, "last_ts": None,
+                "process_calls": DAEMON.calls}
+    summary: dict[str, Any] = {"enabled": True, "log": path, "records": 0, "errors": 0,
+                               "last_ts": None, "process_calls": DAEMON.calls}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                summary["records"] += 1
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if row.get("ts"):
+                    summary["last_ts"] = row["ts"]
+                if row.get("ok") is False:
+                    summary["errors"] += 1
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # pragma: no cover - filesystem dependent
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+    return summary
+
+
+def logged(name: str, shape=None):
+    """Record every call to the wrapped tool — success or failure — in the usage log.
+
+    Applied *under* `@mcp.tool`, so the wrapper is what the tool registry holds.
+    `tests/test_server.py` asserts every registered tool carries the marker, which is what stops a
+    ninth tool shipping unlogged. `shape(*args, **kwargs)` gets the tool's own arguments and may
+    return counts and sizes only: returning the text would put screened content on disk.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                _usage_record(name, (time.perf_counter() - started) * 1000, False,
+                              f"{type(exc).__name__}: {exc}"[:200],
+                              shape(*args, **kwargs) if shape else {})
+                raise
+            _usage_record(name, (time.perf_counter() - started) * 1000, True, None,
+                          shape(*args, **kwargs) if shape else {})
+            return result
+
+        wrapper.__laya_usage_tool__ = name  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorate
+
+
+# Each of these takes the wrapped tool's own arguments, so the decorator stays a one-liner at the
+# tool site and the recorded shape is obvious next to the signature it mirrors.
+
+def _shape_state(state: Any, questions: dict[str, Any] | None = None, preset: str | None = None,
+                 timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"preset": preset, "questions": len(questions or {}), "state_chars": _size(state)}
+
+
+def _shape_text(text: str, timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"chars": _size(text)}
+
+
+def _shape_task(task: str, timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"chars": _size(task)}
+
+
+def _shape_classify(items: list[str] | None, catalog: dict[str, str] | None,
+                    instructions: str = "", timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"items": len(items or []), "labels": len(catalog or {})}
+
+
+def _shape_route(task: str, context: str | None = None, backend: str = "laya",
+                 timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"backend": backend, "chars": _size(task) + _size(context)}
+
+
+def _shape_verify(before: str, after: str, backend: str = "laya", max_lines: int = 40,
+                  timeout_ms: int | None = None) -> dict[str, Any]:
+    return {"backend": backend, "before_chars": _size(before), "after_chars": _size(after),
+            "max_lines": max_lines}
 
 
 class LayaDaemon:
@@ -204,6 +363,11 @@ class LayaDaemon:
             self._proc.stdin.flush()
             return self._read_response(timeout_s)
 
+    @property
+    def calls(self) -> int:
+        """Calls answered by *this* process. The durable count lives in the usage log."""
+        return self._calls
+
     def health(self) -> dict[str, Any]:
         proc = self._proc
         return {
@@ -276,6 +440,7 @@ def _fmt(result: dict[str, Any]) -> str:
         "refit on your own data."
     )
 )
+@logged("laya_decide", shape=_shape_state)
 def laya_decide(state: Any, questions: dict[str, Any], preset: str | None = None,
                 timeout_ms: int | None = None) -> str:
     """Score typed questions against a state in one forward pass."""
@@ -294,6 +459,7 @@ def laya_decide(state: Any, questions: dict[str, Any], preset: str | None = None
         "summarise rather than trust the raw text."
     )
 )
+@logged("laya_gate", shape=_shape_text)
 def laya_gate(text: str, timeout_ms: int | None = None) -> str:
     """Prompt-injection / jailbreak / sensitive-data / harm screen on untrusted text."""
     return _fmt(DAEMON.call({"preset": "guard", "state": {"content": text}}, timeout_ms))
@@ -306,6 +472,7 @@ def laya_gate(text: str, timeout_ms: int | None = None) -> str:
         "expensive agent turn; escalate to a human when confidence is low."
     )
 )
+@logged("laya_triage", shape=_shape_text)
 def laya_triage(text: str, timeout_ms: int | None = None) -> str:
     """Support/email triage preset over a message body."""
     return _fmt(DAEMON.call({"preset": "triage", "state": {"body": text}}, timeout_ms))
@@ -318,6 +485,7 @@ def laya_triage(text: str, timeout_ms: int | None = None) -> str:
         "a scheduled job or an expensive agent turn to decide the cost/quality tradeoff."
     )
 )
+@logged("laya_route", shape=_shape_task)
 def laya_route(task: str, timeout_ms: int | None = None) -> str:
     """Model/tool routing decision for a task description."""
     return _fmt(DAEMON.call({"preset": "router", "state": {"request": task}}, timeout_ms))
@@ -330,6 +498,7 @@ def laya_route(task: str, timeout_ms: int | None = None) -> str:
         "dedupe / triage / labelling sweep. Returns the label per item with confidence."
     )
 )
+@logged("laya_classify", shape=_shape_classify)
 def laya_classify(items: list[str], catalog: dict[str, str],
                   instructions: str = "Which category does each item belong to?",
                   timeout_ms: int | None = None) -> str:
@@ -384,6 +553,7 @@ def _router_module(*names: str):
         "instead; this tool is the measured, schema-driven one."
     )
 )
+@logged("route_step", shape=_shape_route)
 def route_step(task: str, context: str | None = None, backend: str = "laya",
                timeout_ms: int | None = None) -> str:
     """Two-tier routing decision from the shared router schema (laya_router/)."""
@@ -441,6 +611,7 @@ def route_step(task: str, context: str | None = None, backend: str = "laya",
         "Ask few questions per call — the encoder's cost is state x questions."
     )
 )
+@logged("verify_step", shape=_shape_verify)
 def verify_step(before: str, after: str, backend: str = "laya", max_lines: int = 40,
                 timeout_ms: int | None = None) -> str:
     """Typed answers about an accessibility diff — `before`/`after` are cua-driver `mode='ax'` captures."""
@@ -502,21 +673,27 @@ def verify_step(before: str, after: str, backend: str = "laya", max_lines: int =
     description=(
         "Report and PROBE the Laya backend: `reachable` says whether the engine answers (starting "
         "it if needed), plus executable, loaded model/family, device, CUDA-graph status, timeout, "
-        "uptime and call count. Use when another tool times out or returns a daemon error; a "
-        "`reachable: false` result carries the underlying error."
+        "uptime and `calls` — which counts THIS process only. The durable record is the `usage` "
+        "block: the JSONL path, how many tool calls it holds, how many of them failed, and the "
+        "last timestamp, so \"has anything ever called this?\" is answerable without shell access. "
+        "Use when another tool times out or returns a daemon error; a `reachable: false` result "
+        "carries the underlying error."
     )
 )
+@logged("laya_health")
 def laya_health() -> str:
-    """Backend health. Probes the engine instead of only reporting past activity."""
+    """Backend health. Probes the engine; `calls` is process-local, `usage` is durable."""
     try:
         DAEMON.start()
     except Exception as exc:
         state = DAEMON.health()
         state["reachable"] = False
         state["error"] = f"{type(exc).__name__}: {exc}"
+        state["usage"] = _usage_summary()
         return json.dumps(state, ensure_ascii=False, indent=2)
     state = DAEMON.health()
     state["reachable"] = True
+    state["usage"] = _usage_summary()
     return json.dumps(state, ensure_ascii=False, indent=2)
 
 
@@ -525,7 +702,8 @@ def _check() -> int:
     print(f"laya-mcp {__version__}")
     rows = (("LAYA_EXE", EXE_PATH), ("LAYA_MODEL", MODEL_PATH), ("LAYA_MODELS_DIR", MODELS_DIR),
             ("LAYA_FAMILY", FAMILY), ("LAYA_DEVICE", DEVICE),
-            ("LAYA_CUDA_GRAPH", "1" if CUDA_GRAPH else "0"), ("LAYA_TIMEOUT_MS", TIMEOUT_MS))
+            ("LAYA_CUDA_GRAPH", "1" if CUDA_GRAPH else "0"), ("LAYA_TIMEOUT_MS", TIMEOUT_MS),
+            ("LAYA_USAGE_LOG", USAGE_LOG or "off"))
     for name, value in rows:
         print(f"  {name:16s} = {value!r}")
     problem = DAEMON._config_error()
@@ -545,6 +723,9 @@ def _check() -> int:
         print(f"\nFAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
     print(f"\nOK  backend answered (cold {cold:.0f} ms, warm {warm:.0f} ms)")
+    summary = _usage_summary()
+    print(f"  usage log: {summary['log'] or 'off'} "
+          f"({summary['records']} record(s), {summary['errors']} failed)")
     for name, a in ans.items():
         if a.get("type") == "noul":
             print(f"  {name:18s} P(true)={a.get('noul', 0):.3f}")
