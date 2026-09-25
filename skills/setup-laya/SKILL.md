@@ -61,6 +61,14 @@ English and the multilingual GGUF. Routing is decided from the **script of the i
 forward pass**, which beats paying a checkpoint swap per request — and the model's confidence gives
 no warning when a checkpoint cannot read its input. `LAYA_MODEL` is ignored when that is set.
 
+Optional third artifact, only if the operator wants browser decisions: the browser-agent checkpoint
+`cklxx/laya-browser` (`huggingface-cli download cklxx/laya-browser --local-dir laya-browser`). It is
+safetensors, not GGUF, so the ggmlc binary cannot serve it — it needs its own venv with `torch` and
+the `laya` SDK, and it enables the `laya_browser_act` tool. Set `LAYA_BROWSER_DIR` to the checkpoint
+directory (the one holding `model.safetensors`, `encoder/`, `tokenizer/`) and `LAYA_BROWSER_PYTHON` to
+that venv's interpreter; leave both unset and the tool is the only thing that changes — it returns a
+one-line error naming the variable, and every other tool still works.
+
 ## 3. Verify the backend before wiring it to anything
 
 If you have not already, put the `mcp` package in the interpreter you will register — the server
@@ -79,7 +87,11 @@ it. Two heavier gates, in increasing cost:
 ```bash
 pip install -e ".[test]" && pytest -q    # unit tests: no model, GPU or network needed
 python tests/smoke_mcp.py                # end-to-end over stdio, as a client: every tool, error paths
+python laya_mcp_server.py --check-browser  # only with LAYA_BROWSER_DIR: loads the browser checkpoint
 ```
+
+`--check-browser` is the browser backend's own gate: it reports the load time (10-16 s, once per
+server process) and makes one real decision from the release's own sample goal.
 
 The daemon has two latencies and they are not the same thing: the child spawns on the first call and
 its **first** load reads the GGUF from disk (seconds), while warm calls are single-digit ms. A
@@ -117,7 +129,7 @@ gain a new failure mode, that is the right choice, not a workaround.
 
 ## 5. Install the call policy, or the tools sit unused
 
-Registration is not integration. The evidence in this repo is blunt: eight tools, registered and
+Registration is not integration. The evidence in this repo is blunt: nine tools, registered and
 tested, discovered by the harness — and **zero recorded agent invocations** until the usage log made
 calls visible (issue #12). Two things are required, and both are required:
 
@@ -135,10 +147,10 @@ exists, and why step 6 is the acceptance test.
 
 ## 6. Prove it works
 
-Drive the tools in a real session. Call all eight — `laya_health`, `laya_gate`, `laya_triage`,
-`laya_route`, `route_step`, `laya_classify`, `laya_decide`, `verify_step` — then read the record,
-because a tool call that the harness *reports* as fine and the usage log does not contain is a
-finding, not a detail:
+Drive the tools in a real session. Call all nine — `laya_health`, `laya_gate`, `laya_triage`,
+`laya_route`, `route_step`, `laya_classify`, `laya_decide`, `verify_step`, `laya_browser_act` (the
+last one only when `LAYA_BROWSER_DIR` is configured) — then read the record, because a tool call that
+the harness *reports* as fine and the usage log does not contain is a finding, not a detail:
 
 ```bash
 tail -20 ~/.laya-mcp/usage.jsonl     # one JSON object per call: tool, ms, ok, pid, seq, shape
@@ -156,13 +168,13 @@ Finish with a compact report:
 
 - what was installed, and where (binary, GGUF, server path, harness config path)
 - whether `--check` answered, with its cold and warm numbers
-- which of the eight tools you called, and what each returned
+- which of the nine tools you called, and what each returned
 - what the usage log gained: N records, tools named
 - what still needs the operator, if anything
 - three concrete prompts or jobs in *this* project where the tools will fire next
 
 **Never report the integration as working without a usage-log record naming the tools you called.**
-"The server is registered and lists eight tools" is a different, weaker claim.
+"The server is registered and lists nine tools" is a different, weaker claim.
 
 ## When to call it, and when to stay out of the way
 
@@ -193,6 +205,9 @@ These are measured and published in this repo — do not restate them more favou
   Preset behaviours (guard, triage) are useful; bespoke judgement calls are not, until a decision head
   is fine-tuned on labelled data from your own workflow.
 - **`choice` stays under ~20 options** — options share a fixed 256-token head budget.
+- **`laya_browser_act` reads the elements you hand it, not the screen.** It answers with an index into
+  your list, so a canvas game — anything whose state lives only in pixels — is invisible to it. All
+  options share the checkpoint's 768-token head budget: keep one call under ~96 candidates.
 - **The encoder pays `questions × (state + question text)`.** Ask 1-3 questions per call and write the
   shortest instruction that still names what is being asked about; the question text, not the state,
   is most of the bill.

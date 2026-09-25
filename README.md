@@ -77,11 +77,21 @@ All configuration is environment variables — no config file, no editing source
 | `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever) |
 | `LAYA_TIMEOUT_MS` | `30000` | Per-call timeout; a hung engine returns an error instead of wedging the agent |
 | `LAYA_USAGE_LOG` | `~/.laya-mcp/usage.jsonl` | JSONL file, one record per tool call, or `off` to disable. Counts and durations only — never the state text |
+| `LAYA_BROWSER_DIR` | — | Browser-agent checkpoint directory; **enables `laya_browser_act`** |
+| `LAYA_BROWSER_PYTHON` | guessed: `<dir>/../.venv/Scripts/python.exe` | The SDK venv (torch + `laya`) that runs the browser checkpoint |
+| `LAYA_BROWSER_DEVICE` | `cuda` | `auto` \| `cuda` \| `cuda:1` \| `cpu` |
+| `LAYA_BROWSER_TIMEOUT_MS` | `300000` | Per-call timeout — the first call pays a 10-16 s checkpoint load |
 
 Put English **and** multilingual GGUFs in `LAYA_MODELS_DIR` and mixed-language traffic stops
 paying a checkpoint swap: routing is decided from the **script of the input, before the forward
 pass**, precisely because the model's confidence gives no warning when a checkpoint cannot read
 its input.
+
+The browser checkpoint is the one thing that cannot come from the ggmlc binary: it ships as
+safetensors with an `rl_agent_config.json`, so it needs the PyTorch SDK. It runs as a second,
+**lazily started** worker process in that SDK's own virtualenv — this server stays torch-free,
+and neither backend pays for the other. Leave `LAYA_BROWSER_DIR` unset and the feature is
+invisible: `laya_browser_act` returns a one-line error naming the variable to set.
 
 ## Verify before wiring anything
 
@@ -102,7 +112,9 @@ OK  backend answered (cold 1388 ms, warm 11 ms)
 ```
 
 `--check` starts the backend, runs one injection fixture through the guard preset and prints the
-numbers. If it fails it says exactly what is missing. No agent required.
+numbers. If it fails it says exactly what is missing. No agent required. `python laya_mcp_server.py
+`--check-browser` does the same for the browser backend: it loads the checkpoint, reports the load
+time and makes one real decision.
 
 ```bash
 pip install -e ".[test]" && pytest -q          # unit tests: no model, GPU or network needed
@@ -111,8 +123,10 @@ python tests/smoke_mcp.py                      # end-to-end over stdio, needs LA
 
 `tests/smoke_mcp.py` drives the server as an MCP **client** over stdio — the same path an agent
 harness uses — so it covers transport, tool dispatch and the daemon child as well: every tool,
-four error paths, a two-sided injection/benign separation check, six concurrent calls (to prove
-responses are not crossed on the single FIFO daemon), and a latency summary. Accuracy assertions
+the error paths (rejected arguments, an unconfigured backend), a two-sided injection/benign
+separation check, six concurrent calls (to prove responses are not crossed on the single FIFO
+daemon), and a latency summary. With `LAYA_BROWSER_DIR` set it also makes one real browser
+decision and re-checks that the ggmlc path still answers in the same process afterwards. Accuracy assertions
 are shape-level on purpose: the stock checkpoints are near chance on zero-shot typed decisions,
 so a suite asserting labels would be red for reasons unrelated to the server.
 
@@ -145,10 +159,12 @@ call, and a failure to write is swallowed so a full disk cannot fail a decision.
 
 ## Tools
 
-Eight tools. Tool-selection quality in an agent collapses past roughly this many, so the descriptions
-are kept short and mutually exclusive. The seventh (`route_step`) and eighth (`verify_step`) arrived
-with steps 2 and 3 of the computer-use integration (issue #3); `verify_step` carries its measured
-accuracy in its own description because its answers sit near the baseline.
+Nine tools, deliberately: **eight answer from the ggmlc engine** (the five presets, the two
+measured step tools and health) and **one from the browser checkpoint** (`laya_browser_act`).
+Tool-selection quality in an agent collapses past roughly this many, so the descriptions are kept
+short and mutually exclusive. `route_step` and `verify_step` arrived with steps 2 and 3 of the
+computer-use integration (issue #3), and `verify_step` carries its measured accuracy in its own
+description because its answers sit near the baseline.
 
 | Tool | Signature | Returns |
 |---|---|---|
@@ -159,7 +175,8 @@ accuracy in its own description because its answers sit near the baseline.
 | `laya_classify` | `(items, catalog, instructions?)` | One label per item, batched in one forward pass |
 | `route_step` | `(task, context?, backend?, timeout_ms?)` | `tier` (economy/frontier) + `needs_tools` + `sensitive` from the committed schema, with the schema digest and an advisory marker |
 | `verify_step` | `(before, after, backend?, max_lines?, timeout_ms?)` | Typed answers (yes/no, closed choice) about an accessibility diff, each with its probability — measured at 0.602 on 103 real diffs, so it is evidence, not a gate |
-| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, process-local `calls`, and the durable `usage` totals |
+| `laya_browser_act` | `(goal, elements, page_text, page_url?, page_title?, recent_actions?, text_fields?, rules?)` | Next browser operation + the element to act on, from the browser checkpoint |
+| `laya_health` | `()` | Probes the engine; `reachable` + paths, device, uptime, process-local `calls`, the durable `usage` totals, and the browser backend's configured/running state |
 
 `laya_route` (the preset router) stays for the preset's opinion and for existing callers.
 
@@ -185,6 +202,49 @@ an image on screen.
 }
 ```
 
+### `laya_browser_act` — the browser-agent checkpoint
+
+A second, optional backend. `cklxx/laya-browser` is an RL fine-tune of the same architecture for
+browser decisions, and it answers three questions in **one** forward pass: which operation to
+perform next, which element to click, and which field to type into.
+
+```jsonc
+// one browser step - the elements are YOUR list, in YOUR order, because the model answers with an index
+{
+  "goal": "Search Wikipedia for 'Python programming language' and open the article about it.",
+  "page_text": "Wikipedia — The Free Encyclopedia. From today's featured article: ...",
+  "elements": [ {"label": "Wikipedia The Free Encyclopedia", "role": "link"},
+                {"label": "Open Search Wikipedia", "role": "searchbox"},
+                {"label": "Search", "role": "button"} ]
+}
+```
+
+```jsonc
+// -> summary: TYPE_TEXT (conf 0.902); TYPE_TEXT 0.965/CLICK 0.025/SCROLL_DOWN 0.003;
+//             target [2] by type_text_target (conf 1.000, of 3 offered)
+```
+
+Labels and roles are whatever you can observe — an accessibility tree, the DOM — formatted as
+`[n] label (role)`, the shape the checkpoint was fine-tuned on; page text is passed through as
+data, and the goal is the **whole** task, not the next step (the rules it was trained with are
+built in, and `rules` overrides them). It never emits a coordinate, a selector or a keystroke: it
+picks an index, and the driver stays yours.
+
+| | |
+|---|---|
+| measured on an RTX 3090 | `TYPE_TEXT` conf 0.900 on the release's own sample goal (which expects `TYPE_TEXT`); `CLICK` conf 0.933 on a search-results page; **42 ms** warm, ~600 ms on the first call after a load |
+| checkpoint load | 10-16 s once per server process, ~1.6 GB VRAM, 615 MB of safetensors |
+| output tokens | 0 — the whole point of a System-1 model |
+| needs | `LAYA_BROWSER_DIR` plus a venv holding torch and `laya`; `--check-browser` verifies both |
+
+Honest limits: the release's sample question offers 58 candidates and all options share a 768-token
+head budget, so keep the list you send under ~96 and prefer the region of the page you are working
+in over the whole tree. Unlike the stock multilingual model this checkpoint *is* fine-tuned for its
+task, but a low operation confidence is still a reason to re-observe the page rather than guess.
+
+The measurements this PR reports — the sample goal, a real search page, and a game loop — are
+reproduced in [`probes/browser_act_probe.py`](probes/browser_act_probe.py).
+
 ## Wiring it into an agent harness
 
 ### Hermes
@@ -198,13 +258,16 @@ hermes mcp add laya \
         LAYA_DEVICE=auto LAYA_CUDA_GRAPH=1
 ```
 
+To enable the browser backend, append `LAYA_BROWSER_DIR=/abs/path/laya-browser/v10s
+LAYA_BROWSER_PYTHON=/abs/path/.venv/Scripts/python.exe` to the `--env` list.
+
 `hermes mcp add` connects to the server, lists its tools, then asks whether to enable them —
 answer `y`. (Heads-up: under a non-interactive shell that prompt cancels and **nothing is
 written**; it needs a real terminal.) Then:
 
 ```bash
 hermes mcp list            # laya  ...  ✓ enabled
-hermes mcp test laya       # Connected, 7 tools
+hermes mcp test laya       # Connected, 9 tools
 ```
 
 Or hand-write the entry in `config.yaml`:

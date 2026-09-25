@@ -46,10 +46,10 @@ def _fenced(text: str, language: str, index: int = 0) -> str:
     return blocks[index]
 
 
-def test_the_server_still_registers_eight_tools():
+def test_the_server_still_registers_nine_tools():
     # A guard on the guard: if this count changes, every test below is measuring the wrong surface,
-    # and the README's "eight tools" claim needs revisiting in the same change.
-    assert len(_server_tools()) == 8
+    # and the README's "nine tools" claim needs revisiting in the same change.
+    assert len(_server_tools()) == 9
 
 
 def test_every_skill_has_frontmatter_an_agent_can_select_on():

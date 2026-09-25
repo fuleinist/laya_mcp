@@ -14,8 +14,8 @@ import pytest
 pytest.importorskip("mcp", reason="the `mcp` package is required to import the server")
 
 from laya_mcp_server import (  # noqa: E402
-    EXE_PATH, MAX_QUESTIONS, MODEL_PATH, MODELS_DIR, PRESETS, QUESTION_TYPES, LayaDaemon,
-    _fmt, _payload,
+    EXE_PATH, MAX_BROWSER_ELEMENTS, MAX_QUESTIONS, MODEL_PATH, MODELS_DIR, PRESETS,
+    QUESTION_TYPES, TIMEOUT_MS, LayaDaemon, _browser_payload, _fmt, _fmt_browser, _payload,
 )
 
 LIVE = bool((os.environ.get("LAYA_EXE") or os.environ.get("PATH")) and os.environ.get("LAYA_MODEL"))
@@ -565,7 +565,7 @@ def test_every_registered_tool_is_wrapped_by_the_usage_decorator():
     tools = srv.mcp._tool_manager.list_tools()
     assert {t.name for t in tools} == {
         "laya_decide", "laya_gate", "laya_triage", "laya_route", "laya_classify",
-        "route_step", "verify_step", "laya_health",
+        "route_step", "verify_step", "laya_browser_act", "laya_health",
     }
     for tool in tools:
         assert getattr(tool.fn, "__laya_usage_tool__", None) == tool.name, \
@@ -593,3 +593,180 @@ def test_health_reports_the_durable_usage_totals(tmp_path, monkeypatch):
     assert usage["records"] == 2 and usage["errors"] == 1
     assert usage["last_ts"]
     assert len(_usage_lines(log)) == 3
+
+
+# --- browser backend: request shaping ---------------------------------------
+
+def test_browser_payload_normalizes_elements_and_keeps_order():
+    """The model answers with one of OUR indexes, so element order is part of the contract."""
+    out = _browser_payload("Find the pricing page",
+                           [{"label": "Pricing", "role": "link"}, "Contact us"],
+                           page_text="Welcome", page_url="https://x.test", page_title="X")
+    assert out["goal"] == "Find the pricing page"
+    assert out["page"] == {"url": "https://x.test", "title": "X", "text": "Welcome"}
+    assert [e["label"] for e in out["elements"]] == ["Pricing", "Contact us"]
+    assert out["elements"][0]["role"] == "link"
+    assert out["elements"][1]["role"] == ""  # a bare string is still a valid candidate
+    assert "rules" not in out and "text_fields" not in out
+
+
+def test_browser_payload_rejects_an_empty_goal_or_no_elements():
+    with pytest.raises(ValueError, match="goal is required"):
+        _browser_payload("", [{"label": "a"}])
+    with pytest.raises(ValueError, match="elements is required"):
+        _browser_payload("do the thing", [])
+
+
+def test_browser_payload_caps_the_candidate_count():
+    """Every option shares the checkpoint's 768-token head budget, so an oversized list must fail
+    here rather than inside the model."""
+    with pytest.raises(ValueError, match="candidate elements"):
+        _browser_payload("goal", [{"label": f"e{i}"} for i in range(MAX_BROWSER_ELEMENTS + 1)])
+
+
+def test_browser_payload_coerces_text_field_ids_and_passes_rules():
+    out = _browser_payload("goal", [{"label": "search", "role": "searchbox"}],
+                           text_fields=["2"], rules="custom rules")
+    assert out["text_fields"] == [2]  # ids arrive as strings from a JSON client
+    assert out["rules"] == "custom rules"
+
+
+def test_browser_config_error_names_the_missing_piece(monkeypatch):
+    """An unconfigured backend must say what to set, not fail later inside a subprocess."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "BROWSER_DIR", "")
+    assert "LAYA_BROWSER_DIR" in srv.BROWSER._config_error()
+    monkeypatch.setattr(srv, "BROWSER_DIR", "G:/nope/not-a-checkpoint")
+    assert "not a directory" in srv.BROWSER._config_error()
+
+
+def test_browser_config_error_for_a_directory_without_weights(tmp_path, monkeypatch):
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "BROWSER_DIR", str(tmp_path))
+    assert "model.safetensors" in srv.BROWSER._config_error()
+
+
+def test_browser_argv_runs_the_worker_isolated(monkeypatch):
+    """-I matters: the worker must not inherit this server's environment or user site-packages."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "BROWSER_PYTHON", "G:/sdk/python.exe")
+    assert srv.BROWSER._argv() == ["G:/sdk/python.exe", "-I", srv.WORKER_PATH]
+
+
+def test_daemon_timeouts_are_per_instance():
+    """The browser backend needs a minutes-scale budget; the ggmlc daemon's 30 s must not leak in."""
+    default = LayaDaemon()
+    slow = LayaDaemon(timeout_ms=120000, readiness_ms=300000)
+    assert (default.timeout_ms, default.readiness_ms) == (TIMEOUT_MS, TIMEOUT_MS)
+    assert (slow.timeout_ms, slow.readiness_ms) == (120000, 300000)
+
+
+def test_browser_fmt_surfaces_operation_target_and_alternatives():
+    result = {"operation": {"choice": "CLICK", "confidence": 0.87,
+                            "probabilities": {"CLICK": 0.87, "TYPE_TEXT": 0.11, "WAIT": 0.02}},
+              "target": {"question": "click_target", "choice": "3", "confidence": 0.51},
+              "target_of": "click_target", "target_id": 3, "elements_offered": 58}
+    summary = json.loads(_fmt_browser(result))["summary"]
+    assert "CLICK" in summary and "0.870" in summary
+    assert "target [3]" in summary
+
+
+def test_browser_health_reports_unconfigured_without_loading_it(monkeypatch):
+    """Health must never pay the checkpoint load just to answer a question about state."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "BROWSER_DIR", "")
+    health = srv.BROWSER.health()
+    assert health["backend"] == "browser"
+    assert health["configured"] is False and health["running"] is False
+
+
+# --- browser backend: the questions the worker builds -----------------------
+
+import laya_browser_worker as worker  # noqa: E402  (imports torch only inside load())
+
+
+def test_worker_formats_candidates_like_the_release():
+    """'[n] label (role)' — the exact shape the checkpoint was fine-tuned on, whitespace collapsed
+    (the raw accessibility tree carries newlines and tabs inside labels)."""
+    assert worker._fmt_element(2, {"label": "Open  Search\n\tWikipedia", "role": "searchbox"}) == \
+        "[2] Open Search Wikipedia (searchbox)"
+    assert worker._fmt_element(7, "Main Page") == "[7] Main Page"
+
+
+def test_worker_asks_all_three_questions_in_one_request():
+    questions = worker.build_questions("Open the pricing page",
+                                       [{"label": "Pricing", "role": "link"},
+                                        {"label": "Search", "role": "searchbox"}])
+    assert list(questions) == ["operation", "click_target", "type_text_target"]
+    assert len(questions["operation"]["criteria"]) == 6                # the six operations
+    assert len(questions["click_target"]["criteria"]) == 2             # every candidate
+    assert list(questions["type_text_target"]["criteria"]) == ["2"]    # editable only
+    assert questions["operation"]["instructions"]["goal"] == "Open the pricing page"
+    assert questions["click_target"]["instructions"]["operation"] == "CLICK"
+
+
+def test_worker_skips_the_type_question_when_nothing_is_editable():
+    """A type_text choice with no editable candidate would only add noise to the pass."""
+    questions = worker.build_questions("goal", [{"label": "Home", "role": "link"}])
+    assert "type_text_target" not in questions
+
+
+def test_worker_text_fields_override_role_detection():
+    questions = worker.build_questions("goal", [{"label": "a", "role": "link"},
+                                                {"label": "b", "role": "link"}], text_fields=[1])
+    assert list(questions["type_text_target"]["criteria"]) == ["1"]
+
+
+def test_worker_state_carries_the_page_and_action_history():
+    state = worker.build_state({"url": "https://x", "title": "X", "text": "body"}, ["click 1"])
+    assert state["page"] == {"url": "https://x", "title": "X", "text": "body"}
+    assert state["recent_actions"] == ["click 1"]
+
+
+def test_worker_rejects_a_request_without_candidates():
+    with pytest.raises(ValueError, match="candidate elements"):
+        worker.answer({"goal": "g", "elements": []})
+
+
+class _StubAgent:
+    """Stands in for the checkpoint, so the mapping from operation to target is tested without a GPU."""
+
+    def __init__(self, answers):
+        self._answers = answers
+
+    def system_one(self, state, questions):
+        return {"model": "stub", "answers": self._answers,
+                "usage": {"input_tokens": 1, "output_tokens": 0}}
+
+
+def test_worker_maps_the_chosen_operation_to_its_target_question(monkeypatch):
+    import laya_browser_worker as module
+
+    monkeypatch.setattr(module, "AGENT", _StubAgent({
+        "operation": {"type": "choice", "choice": "CLICK", "probabilities": {"CLICK": 1.0},
+                      "confidence": 1.0, "action": {"act_probability": 1.0}},
+        "click_target": {"type": "choice", "choice": "5", "probabilities": {"5": 0.9},
+                         "confidence": 0.9},
+    }))
+    out = module.answer({"goal": "g", "elements": [{"label": "a"}, {"label": "b"}]})
+    assert out["operation"]["choice"] == "CLICK"
+    assert out["target_of"] == "click_target"
+    assert out["target"]["choice"] == "5"
+    assert out["target_id"] == 5           # the int a browser driver actually clicks
+    assert out["act_probability"] == 1.0
+    assert out["elements_offered"] == 2
+
+
+def test_browser_shape_records_sizes_not_text():
+    """The usage log records counts and sizes; page text and element labels must not reach it."""
+    import laya_mcp_server as srv
+
+    shape = srv._shape_browser(goal="do the thing", elements=[{"label": "Payment settings"}],
+                               page_text="x" * 100, recent_actions=["click 1"], text_fields=[1])
+    assert shape == {"elements": 1, "goal_chars": 12, "page_chars": 100, "actions": 1,
+                     "text_fields": 1, "rules": False}
+    assert "Payment settings" not in json.dumps(shape)

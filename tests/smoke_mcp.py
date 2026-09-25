@@ -100,13 +100,14 @@ async def run(server: str) -> int:
             t0 = time.time()
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
-            record("tools/list returns eight tools", len(names) == 8, f"{len(names)}: {', '.join(names)}")
+            record("tools/list returns nine tools", len(names) == 9, f"{len(names)}: {', '.join(names)}")
             record("every tool has a description",
                    all((t.description or "").strip() for t in tools),
                    f"{sum(1 for t in tools if (t.description or '').strip())}/{len(tools)} documented")
             record("handler for every advertised tool",
                    set(names) == {"laya_decide", "laya_gate", "laya_triage", "laya_route",
-                                  "laya_classify", "laya_health", "route_step", "verify_step"},
+                                  "laya_classify", "laya_health", "route_step", "verify_step",
+                                  "laya_browser_act"},
                    "names match the README")
             print(f"          (handshake + list_tools in {(time.time() - t0) * 1000:.0f} ms)")
 
@@ -221,6 +222,61 @@ async def run(server: str) -> int:
             print("          note: labels above are shape-checked only — zero-shot accuracy on bespoke")
             print("                label spaces is near chance until a decision head is fine-tuned.")
 
+            print("\n== browser backend (optional, LAYA_BROWSER_DIR) ==")
+            bconf = parse(await call(session, "laya_health", {})).get("browser") or {}
+            record("laya_health reports the browser backend", bconf.get("backend") == "browser",
+                   f"configured={bconf.get('configured')} running={bconf.get('running')} "
+                   f"device={bconf.get('device')}")
+            # Health about a 615 MB checkpoint must not cost a 12 s load to answer.
+            record("browser health does not load the checkpoint", bconf.get("running") is False,
+                   "no load charged to a health probe")
+
+            if os.environ.get("LAYA_BROWSER_DIR"):
+                belements = [{"label": "Wikipedia The Free Encyclopedia", "role": "link"},
+                             {"label": "Open Search Wikipedia", "role": "searchbox"},
+                             {"label": "Search", "role": "button"},
+                             {"label": "Donate", "role": "link"}]
+                b = parse(await call(session, "laya_browser_act", {
+                    "goal": "Search Wikipedia for 'Python programming language' and open the "
+                            "article about the Python language.",
+                    "page_text": "Wikipedia — The Free Encyclopedia. From today's featured article.",
+                    "page_url": "https://en.wikipedia.org/wiki/Main_Page",
+                    "elements": belements,
+                }, timeout=300))
+                bop = b.get("operation") or {}
+                operation = bop.get("choice")
+                record("laya_browser_act returns one of the six operations",
+                       operation in {"CLICK", "TYPE_TEXT", "SCROLL_DOWN", "WAIT", "DONE", "BLOCKED"},
+                       f"operation={operation} conf={bop.get('confidence')} in {b.get('ms')} ms")
+                # The release's own sample request expects TYPE_TEXT for exactly this goal — the one
+                # accuracy claim that can be made zero-shot, because the checkpoint was trained on it.
+                record("browser operation matches the sample goal", operation == "TYPE_TEXT",
+                       f"got {operation}, the release's sample expects TYPE_TEXT")
+                if operation in ("CLICK", "TYPE_TEXT"):
+                    target_id = b.get("target_id")
+                    record("browser target is an offered element index",
+                           isinstance(target_id, int) and 1 <= target_id <= len(belements),
+                           f"target [{target_id}] of {len(belements)} via {b.get('target_of')} "
+                           f"(conf {(b.get('target') or {}).get('confidence')})")
+                record("browser probabilities are in [0,1]",
+                       all(0.0 <= v <= 1.0 for v in (bop.get("probabilities") or {}).values())
+                       and bool(bop.get("probabilities")), f"{len(bop.get('probabilities') or {})} options")
+                record("browser call costs no output tokens", (b.get("usage") or {}).get("output_tokens") == 0,
+                       f"input_tokens={(b.get('usage') or {}).get('input_tokens')}")
+                # Both backends share one server process: a torch load must not break the ggmlc path.
+                again = parse(await call(session, "laya_gate", {"text": BENIGN}))
+                record("ggmlc tool still answers after the browser load", bool(again.get("answers")),
+                       f"{len(again.get('answers') or {})} answers")
+            else:
+                unset = await call(session, "laya_browser_act",
+                                   {"goal": "find the pricing page", "elements": ["Pricing"],
+                                    "page_text": "Welcome."}, timeout=60)
+                detail = " ".join(getattr(i, "text", "") for i in (unset.content or []))
+                record("browser tool refuses clearly when unconfigured",
+                       is_error(unset) and "LAYA_BROWSER_DIR" in detail,
+                       "error names LAYA_BROWSER_DIR" if "LAYA_BROWSER_DIR" in detail
+                       else f"is_error={is_error(unset)}: {detail[:120]}")
+
             print("\n== error paths (must be reported, never hang or crash) ==")
             bads = [
                 ("unknown question type",
@@ -239,6 +295,8 @@ async def run(server: str) -> int:
                  ("verify_step", {"before": "{\"elements\": []}", "after": "{}"})),
                 ("verify_step with an unknown backend",
                  ("verify_step", {"before": "{}", "after": "{}", "backend": "gpt-5"})),
+                ("laya_browser_act with no candidates",
+                 ("laya_browser_act", {"goal": "find the pricing page", "elements": []})),
             ]
             for label, (tool, args) in bads:
                 try:

@@ -49,6 +49,11 @@ Call it when the answer can change what you do next, without the operator asking
                           on 103 real diffs against a 0.569 majority-class baseline: advisory
                           evidence with a known error rate, never the gate that decides a step
                           succeeded.
+- laya_browser_act(goal, elements) — a browser step, when the operator has the browser checkpoint
+                          configured: pass the WHOLE goal (not the next step), the page text, and
+                          your candidate elements in the order you index them. It answers with an
+                          operation and an index, never a selector — your driver still clicks. Skip
+                          it on canvas/pixel games, where there is nothing to point at.
 - laya_health()         — another Laya tool timed out or the daemon looks wedged. Its `usage` block
                           is the durable record of what this machine has ever called.
 

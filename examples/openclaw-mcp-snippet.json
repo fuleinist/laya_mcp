@@ -10,7 +10,10 @@
           "LAYA_MODEL": "/abs/path/laya_multilingual_q8_0.gguf",
           "LAYA_DEVICE": "auto",
           "LAYA_CUDA_GRAPH": "1",
-          "LAYA_TIMEOUT_MS": "30000"
+          "LAYA_TIMEOUT_MS": "30000",
+          "LAYA_BROWSER_DIR": "",
+          "LAYA_BROWSER_PYTHON": "",
+          "LAYA_BROWSER_DEVICE": "cuda"
         }
       }
     }
