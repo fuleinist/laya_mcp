@@ -76,6 +76,7 @@ All configuration is environment variables — no config file, no editing source
 | `LAYA_DEVICE` | `auto` | `auto` \| `cuda` \| `cpu` \| `metal` |
 | `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever) |
 | `LAYA_TIMEOUT_MS` | `30000` | Per-call timeout; a hung engine returns an error instead of wedging the agent |
+| `LAYA_CPU_FALLBACK` | `1` | On timeout, kill the stuck daemon, retry the call once on a fresh `--device cpu` daemon and stay on CPU. A timeout almost always means VRAM starvation by another process; CPU is ~16× slower per question but immune. `0` fails fast instead. The browser backend never falls back |
 | `LAYA_USAGE_LOG` | `~/.laya-mcp/usage.jsonl` | JSONL file, one record per tool call, or `off` to disable. Counts and durations only — never the state text |
 | `LAYA_BROWSER_DIR` | — | Browser-agent checkpoint directory; **enables `laya_browser_act`** |
 | `LAYA_BROWSER_PYTHON` | guessed: `<dir>/../.venv/Scripts/python.exe` | The SDK venv (torch + `laya`) that runs the browser checkpoint |
@@ -461,6 +462,7 @@ Read this before gating anything on a probability.
 | `laya executable not found` | Set `LAYA_EXE` or put the binary on `PATH`. Keep it on an explicit path: the ggmlc binary shares the name `laya` with the PyPI package. |
 | `laya daemon did not report ready in time` | First load reads the GGUF from disk; raise `LAYA_TIMEOUT_MS`. `laya --check`-style manual run: `laya daemon <model> --device auto --cuda-graph`. |
 | Timeouts under load | Requests are strictly FIFO on one daemon; a long batch delays the next call. Call `laya_classify` with all items at once rather than looping. |
+| Timeouts while another process holds the GPU | Compute saturation alone is survivable (calls still land in ~200 ms at 100% util); **VRAM exhaustion** near the card's ceiling is not — the resident CUDA daemon stalls until the timeout. With `LAYA_CPU_FALLBACK=1` (the default) the server now recovers on its own: it kills the stuck daemon and answers the same call from a fresh `--device cpu` one, ~1.5 s restart + ~0.7 s per 7-question forward. `laya_health` shows the degraded state (`device: cpu`, `fallback_events: n`); restart the MCP server to get the GPU path back once VRAM frees up. Measured: 41.9 ms → 685.6 ms wall for the 7-question bench. |
 | `laya.load()` hangs (PyTorch path only) | `transformers` probes for TensorFlow at import and abseil can deadlock construction: run with `USE_TF=0`. |
 | Two engines, double VRAM | The MCP server's daemon is separate from a resident `laya serve`. Stop the resident one (`laya-stop.cmd`, or kill the listener on the port) if you do not need the HTTP endpoint. |
 

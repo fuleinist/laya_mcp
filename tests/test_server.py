@@ -664,6 +664,110 @@ def test_daemon_timeouts_are_per_instance():
     assert (slow.timeout_ms, slow.readiness_ms) == (120000, 300000)
 
 
+# --- CPU fallback on timeout (issue #16) ------------------------------------
+# A timeout under GPU load almost always means VRAM starvation by another process, and the old
+# behaviour was to surface it after burning the whole budget. These tests fake `_send` (the part
+# that talks to the child) — the fallback logic itself is what is under test, not the engine.
+
+def _daemon_with_sends(monkeypatch, outcomes):
+    """A LayaDaemon whose _send pops canned results; exceptions in `outcomes` are raised."""
+    d = LayaDaemon(timeout_ms=1000)
+    sent = []
+
+    def fake_send(payload, timeout_s):
+        sent.append(payload)
+        out = outcomes[len(sent) - 1]
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    monkeypatch.setattr(d, "_send", fake_send)
+    stops = []
+    monkeypatch.setattr(d, "stop", lambda: stops.append(1))
+    return d, sent, stops
+
+
+def test_timeout_retries_the_same_payload_on_a_cpu_daemon(monkeypatch):
+    d, sent, stops = _daemon_with_sends(monkeypatch, [
+        TimeoutError("laya daemon did not answer within 1.0s"),
+        {"answers": {"q": {"type": "choice", "choice": "ok"}}},
+    ])
+    d.device = "cuda"
+    out = d.call({"preset": "guard", "state": {"content": "x"}})
+    assert out["answers"]["q"]["choice"] == "ok"
+    assert sent[0] == sent[1], "the retry must be the identical payload"
+    assert stops == [1], "the stuck daemon must be killed before the retry"
+    assert d.device == "cpu" and d.fallback_events == 1
+
+
+def test_fallback_stays_on_cpu_for_later_calls(monkeypatch):
+    """No flapping back to CUDA: VRAM pressure is not something this process can observe ending."""
+    d, sent, stops = _daemon_with_sends(monkeypatch, [
+        TimeoutError("stalled"), {"answers": {}}, {"answers": {}},
+    ])
+    d.device = "cuda"
+    d.call({"preset": "guard", "state": {}})
+    d.call({"preset": "guard", "state": {}})
+    assert d.device == "cpu" and d.fallback_events == 1 and stops == [1]
+
+
+def test_fallback_disabled_fails_fast(monkeypatch):
+    d, sent, stops = _daemon_with_sends(monkeypatch, [TimeoutError("stalled")])
+    d.device = "cuda"
+    d.cpu_fallback = False
+    with pytest.raises(TimeoutError):
+        d.call({"preset": "guard", "state": {}})
+    assert stops == [] and len(sent) == 1
+
+
+def test_no_fallback_loop_when_already_on_cpu(monkeypatch):
+    d, sent, stops = _daemon_with_sends(monkeypatch, [TimeoutError("stalled")])
+    d.device = "cpu"
+    with pytest.raises(TimeoutError):
+        d.call({"preset": "guard", "state": {}})
+    assert stops == [] and len(sent) == 1 and d.fallback_events == 0
+
+
+def test_double_timeout_names_the_cpu_retry_in_the_error(monkeypatch):
+    d, sent, stops = _daemon_with_sends(monkeypatch, [
+        TimeoutError("laya daemon did not answer within 30.0s"),
+        TimeoutError("laya daemon did not answer within 30.0s"),
+    ])
+    d.device = "cuda"
+    with pytest.raises(TimeoutError) as err:
+        d.call({"preset": "guard", "state": {}})
+    assert "CPU fallback" in str(err.value) and d.fallback_events == 1
+
+
+def test_argv_follows_the_effective_device_and_drops_cuda_graph(monkeypatch):
+    """`--cuda-graph` on `--device cpu` is meaningless; the fallback must not pass it."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "MODEL_PATH", "/x/m.gguf")
+    monkeypatch.setattr(srv, "MODELS_DIR", "")
+    d = LayaDaemon()
+    d.device, d.cuda_graph = "auto", True
+    assert d._argv()[-2:] == ["--device", "auto"] or "--cuda-graph" in d._argv()
+    d.device = "cpu"
+    argv = d._argv()
+    assert "--cuda-graph" not in argv and argv[-2:] == ["--device", "cpu"]
+
+
+def test_health_reports_the_degraded_state():
+    d = LayaDaemon()
+    d.device, d.fallback_events = "cpu", 2
+    health = d.health()
+    assert health["device"] == "cpu" and health["fallback_events"] == 2
+    assert health["cpu_fallback"] is True
+
+
+def test_browser_backend_never_falls_back():
+    """The torch checkpoint is seconds-per-action on CPU; waiting for VRAM beats degrading."""
+    import laya_mcp_server as srv
+
+    assert srv.BROWSER.cpu_fallback is False
+
+
 def test_browser_fmt_surfaces_operation_target_and_alternatives():
     result = {"operation": {"choice": "CLICK", "confidence": 0.87,
                             "probabilities": {"CLICK": 0.87, "TYPE_TEXT": 0.11, "WAIT": 0.02}},
