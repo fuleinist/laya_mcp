@@ -30,6 +30,10 @@ Environment
   LAYA_DEVICE      auto | cpu | cuda | metal                          (default: auto)
   LAYA_CUDA_GRAPH  "1" to capture a CUDA graph for the live shape     (default: 1)
   LAYA_TIMEOUT_MS  per-call timeout in ms                             (default: 30000)
+  LAYA_CPU_FALLBACK "1" to retry a timed-out call once on a fresh --device cpu daemon and stay
+                   on CPU afterwards (a timeout nearly always means VRAM starvation by another
+                   process; CPU inference is ~16x slower per question but immune to it).
+                   Browser backend never falls back. Set "0" to fail fast instead. (default: 1)
   LAYA_USAGE_LOG   JSONL file to append one record per tool call, or `off`
                    to disable. Records counts and durations, never the
                    state text. (default: ~/.laya-mcp/usage.jsonl)
@@ -94,6 +98,13 @@ FAMILY = os.environ.get("LAYA_FAMILY", "auto").strip() or "auto"
 DEVICE = os.environ.get("LAYA_DEVICE", "auto").strip() or "auto"
 TIMEOUT_MS = int(os.environ.get("LAYA_TIMEOUT_MS", "30000"))
 CUDA_GRAPH = os.environ.get("LAYA_CUDA_GRAPH", "1").strip() not in ("0", "", "false", "False")
+# A daemon call that times out usually means the resident CUDA daemon is stalled on VRAM (seen in
+# the wild: three 30-240 s timeouts while a ComfyUI render held 23+ of 24 GB — issue #16). Compute
+# saturation alone is survivable (225 ms calls measured at 100% util), so the recovery is to kill
+# the stuck daemon and answer the same call from a fresh `--device cpu` one: ~1.5 s restart, then
+# ~0.7 s per 7-question forward, immune to VRAM pressure. Default on; `0` restores the old
+# fail-fast behaviour.
+CPU_FALLBACK = os.environ.get("LAYA_CPU_FALLBACK", "1").strip() not in ("0", "", "false", "False")
 
 BROWSER_DIR = os.environ.get("LAYA_BROWSER_DIR", "").strip()
 BROWSER_DEVICE = os.environ.get("LAYA_BROWSER_DEVICE", "cuda").strip() or "cuda"
@@ -290,9 +301,19 @@ def _shape_browser(goal: str = "", elements: list | None = None, page_text: str 
 
 
 class LayaDaemon:
-    """Serialized client for `laya daemon` (strict request/response FIFO)."""
+    """Serialized client for `laya daemon` (strict request/response FIFO).
 
-    def __init__(self, timeout_ms: int | None = None, readiness_ms: int | None = None) -> None:
+    Holds the *effective* device, which starts at `LAYA_DEVICE` and can only move one way: to
+    `cpu`, after a call timed out and `LAYA_CPU_FALLBACK` is on (issue #16). A timeout almost
+    always means the resident CUDA daemon is stalled on VRAM held by another process; compute
+    saturation alone does not do it. The recovery is to kill the stuck daemon and answer the same
+    call from a fresh `--device cpu` one — ~1.5 s restart plus ~0.7 s per 7-question forward,
+    measured, immune to VRAM pressure. The browser worker opts out: its torch checkpoint is
+    seconds-per-action on CPU, so waiting for VRAM beats falling back.
+    """
+
+    def __init__(self, timeout_ms: int | None = None, readiness_ms: int | None = None,
+                 cpu_fallback: bool | None = None) -> None:
         self._proc: subprocess.Popen | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._lock = threading.Lock()
@@ -300,6 +321,10 @@ class LayaDaemon:
         self._started_at: float | None = None
         self.timeout_ms = timeout_ms or TIMEOUT_MS
         self.readiness_ms = readiness_ms or TIMEOUT_MS
+        self.device = DEVICE
+        self.cuda_graph = CUDA_GRAPH
+        self.cpu_fallback = CPU_FALLBACK if cpu_fallback is None else cpu_fallback
+        self.fallback_events = 0
 
     # ---- lifecycle -------------------------------------------------------
     def _argv(self) -> list[str]:
@@ -310,8 +335,8 @@ class LayaDaemon:
             argv += [MODEL_PATH]
         if FAMILY and FAMILY != "auto":
             argv += ["--family", FAMILY]
-        argv += ["--device", DEVICE]
-        if CUDA_GRAPH:
+        argv += ["--device", self.device]
+        if self.cuda_graph and self.device != "cpu":  # a graph captured for CUDA is meaningless here
             argv += ["--cuda-graph"]
         return argv
 
@@ -332,13 +357,15 @@ class LayaDaemon:
             return f"model not found: {MODEL_PATH}"
         return None
 
-    def _reader(self, proc: subprocess.Popen) -> None:
+    def _reader(self, proc: subprocess.Popen, lines: "queue.Queue[str | None]") -> None:
+        # `lines` is captured per spawn, never read off `self`: after a fallback restart the old
+        # child's reader must deposit its EOF sentinel on the OLD queue, not poison the new one.
         try:
             for line in proc.stdout:  # type: ignore[union-attr]
-                self._lines.put(line.rstrip("\r\n"))
+                lines.put(line.rstrip("\r\n"))
         except Exception:
             pass
-        self._lines.put(None)  # EOF sentinel
+        lines.put(None)  # EOF sentinel
 
     def start(self) -> None:
         if self._proc and self._proc.poll() is None:
@@ -346,20 +373,22 @@ class LayaDaemon:
         problem = self._config_error()
         if problem:
             raise RuntimeError(problem)
+        lines: "queue.Queue[str | None]" = queue.Queue()
         proc = subprocess.Popen(
             self._argv(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
         self._proc = proc
+        self._lines = lines
         self._started_at = time.time()
-        threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._reader, args=(proc, lines), daemon=True).start()
         # Consume the one-shot readiness line; surface boot failures instead of hanging until
         # the caller's timeout expires on a dead child.
         deadline = time.time() + self.readiness_ms / 1000
         while time.time() < deadline:
             try:
-                line = self._lines.get(timeout=1.0)
+                line = lines.get(timeout=1.0)
             except queue.Empty:
                 if proc.poll() is not None:
                     raise RuntimeError(f"laya daemon exited during startup (code {proc.returncode})")
@@ -380,6 +409,7 @@ class LayaDaemon:
                 self._proc.kill()
             except Exception:
                 pass
+        self._proc = None  # kill is async; drop the handle so start() cannot see a "live" corpse
 
     # ---- request/response ------------------------------------------------
     def _read_response(self, timeout_s: float) -> dict[str, Any]:
@@ -404,19 +434,41 @@ class LayaDaemon:
                 continue
             return obj
 
+    def _send(self, payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
+        self.start()
+        assert self._proc and self._proc.stdin
+        body = dict(payload)
+        body.setdefault("id", f"mcp-{self._calls}")
+        self._calls += 1
+        self._proc.stdin.write(json.dumps(body, ensure_ascii=False) + "\n")
+        self._proc.stdin.flush()
+        return self._read_response(timeout_s)
+
     def call(self, payload: dict[str, Any], timeout_ms: int | None = None) -> dict[str, Any]:
         timeout_s = (timeout_ms or self.timeout_ms) / 1000
         # The lock is what makes FIFO hold: the daemon answers in request order, so a second
-        # in-flight request would read the first one's answer.
+        # in-flight request would read the first one's answer. It is also what makes the fallback
+        # safe — no other caller can be mid-request when the daemon is killed and restarted.
         with self._lock:
-            self.start()
-            assert self._proc and self._proc.stdin
-            body = dict(payload)
-            body.setdefault("id", f"mcp-{self._calls}")
-            self._calls += 1
-            self._proc.stdin.write(json.dumps(body, ensure_ascii=False) + "\n")
-            self._proc.stdin.flush()
-            return self._read_response(timeout_s)
+            try:
+                return self._send(payload, timeout_s)
+            except TimeoutError:
+                if not self.cpu_fallback or self.device == "cpu":
+                    raise
+                # Issue #16: the resident CUDA daemon is stalled (almost always on VRAM held by
+                # another process — compute saturation alone survives at ~200 ms). Kill it, retry
+                # the identical payload once on a fresh CPU daemon, and stay on CPU: the VRAM
+                # pressure that caused the stall is not something this process can observe ending.
+                self.stop()
+                self.device = "cpu"
+                self.fallback_events += 1
+                try:
+                    return self._send(payload, timeout_s)
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"{exc} (also on the CPU fallback daemon; the engine itself is wedged, "
+                        "not just the GPU)"
+                    ) from exc
 
     @property
     def calls(self) -> int:
@@ -429,12 +481,14 @@ class LayaDaemon:
             "exe": EXE_PATH,
             "model": MODELS_DIR or MODEL_PATH,
             "family": FAMILY,
-            "device": DEVICE,
-            "cuda_graph": CUDA_GRAPH,
+            "device": self.device,
+            "cuda_graph": self.cuda_graph,
             "timeout_ms": self.timeout_ms,
             "running": bool(proc and proc.poll() is None),
             "uptime_s": round(time.time() - self._started_at, 1) if self._started_at else None,
             "calls": self._calls,
+            "cpu_fallback": self.cpu_fallback,
+            "fallback_events": self.fallback_events,
         }
 
 
@@ -496,7 +550,10 @@ class LayaBrowser(LayaDaemon):
 
 
 DAEMON = LayaDaemon()
-BROWSER = LayaBrowser(timeout_ms=BROWSER_TIMEOUT_MS, readiness_ms=BROWSER_READY_MS)
+# The browser worker opts out of the CPU fallback: its torch checkpoint is seconds-per-action on
+# CPU, so a VRAM-starved GPU is answered by waiting, not by degrading (issue #16).
+BROWSER = LayaBrowser(timeout_ms=BROWSER_TIMEOUT_MS, readiness_ms=BROWSER_READY_MS,
+                      cpu_fallback=False)
 mcp = MCPServer(
     name="laya",
     version=__version__,
