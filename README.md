@@ -52,10 +52,17 @@ Two consequences worth internalising before you file a bug here:
 ## Requirements
 
 1. A ggmlc `laya` binary — [releases](https://github.com/monatis/ggmlc/releases), e.g.
-   `laya-windows-x86_64-cuda-sm86.zip`, `laya-linux-x86_64-cuda-*.tar.gz`, or the CPU build.
+   `laya-windows-x86_64-cuda-sm86.zip`, `laya-linux-x86_64-cuda-*.tar.gz`,
+   `laya-macos-arm64-metal.tar.gz`, or the CPU build.
 2. One or more Laya GGUFs, e.g. from [`mys/laya-multilingual-GGUF`](https://huggingface.co/mys/laya-multilingual-GGUF)
    (Q8_0 ≈ 345 MB, F16 ≈ 633 MB). English: [`mys/laya-GGUF`](https://huggingface.co/mys/laya-GGUF).
 3. Python 3.10+ and the `mcp` package.
+
+**macOS.** The Metal asset is the same binary, so a Mac needs no code change: install
+`laya-macos-arm64-metal.tar.gz`, set `LAYA_EXE`, and set `LAYA_DEVICE=metal` (or `auto`). The
+asset is arm64 only. The server never passes `--cuda-graph` to a Metal device, because CUDA graph
+capture does not exist there. See [`examples/macos-launchagent`](examples/macos-launchagent) to run
+the engine at login.
 
 ```bash
 pip install mcp                     # or: uv pip install mcp
@@ -74,7 +81,7 @@ All configuration is environment variables — no config file, no editing source
 | `LAYA_MODELS_DIR` | — | Directory of GGUFs; **enables per-request routing** and wins over `LAYA_MODEL` |
 | `LAYA_FAMILY` | `auto` | `auto` \| `english` \| `multilingual` \| `typed-decisions` |
 | `LAYA_DEVICE` | `auto` | `auto` \| `cuda` \| `cpu` \| `metal` |
-| `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever) |
+| `LAYA_CUDA_GRAPH` | `1` | Capture a CUDA graph for the live shape (the main speed lever). CUDA only: the server never passes `--cuda-graph` to `metal`, and with `auto` on macOS it withholds the flag. ggmlc fails on an unknown flag, so the wrong device must not receive it |
 | `LAYA_TIMEOUT_MS` | `30000` | Per-call timeout; a hung engine returns an error instead of wedging the agent |
 | `LAYA_CPU_FALLBACK` | `1` | On timeout, kill the stuck daemon, retry the call once on a fresh `--device cpu` daemon and stay on CPU. A timeout almost always means VRAM starvation by another process; CPU is ~16× slower per question but immune. `0` fails fast instead. The browser backend never falls back |
 | `LAYA_USAGE_LOG` | `~/.laya-mcp/usage.jsonl` | JSONL file, one record per tool call, or `off` to disable. Counts and durations only — never the state text |
@@ -105,6 +112,7 @@ laya-mcp 0.2.0
   LAYA_EXE        = 'C:\\ggmlc\\laya.exe'
   LAYA_MODEL      = 'C:\\models\\laya_multilingual_q8_0.gguf'
   ...
+  cuda graph      = requested
 OK  backend answered (cold 1388 ms, warm 11 ms)
   usage log: C:\Users\you\.laya-mcp\usage.jsonl (0 record(s), 0 failed)
   jailbreak          P(true)=0.995
@@ -461,6 +469,7 @@ Read this before gating anything on a probability.
 | `unknown model architecture: 'ggmlc'` | You loaded the GGUF in llama.cpp/Ollama/LM Studio. Use the ggmlc binary. |
 | `laya executable not found` | Set `LAYA_EXE` or put the binary on `PATH`. Keep it on an explicit path: the ggmlc binary shares the name `laya` with the PyPI package. |
 | `laya daemon did not report ready in time` | First load reads the GGUF from disk; raise `LAYA_TIMEOUT_MS`. `laya --check`-style manual run: `laya daemon <model> --device auto --cuda-graph`. |
+| A Mac, and nothing in this README names a binary | Use `laya-macos-arm64-metal.tar.gz` from the ggmlc releases, set `LAYA_EXE`, and set `LAYA_DEVICE=metal` (or `auto`). The asset is arm64 only. `laya-mcp --check` prints the device and whether a CUDA graph was requested. |
 | Timeouts under load | Requests are strictly FIFO on one daemon; a long batch delays the next call. Call `laya_classify` with all items at once rather than looping. |
 | Timeouts while another process holds the GPU | Compute saturation alone is survivable (calls still land in ~200 ms at 100% util); **VRAM exhaustion** near the card's ceiling is not — the resident CUDA daemon stalls until the timeout. With `LAYA_CPU_FALLBACK=1` (the default) the server now recovers on its own: it kills the stuck daemon and answers the same call from a fresh `--device cpu` one, ~1.5 s restart + ~0.7 s per 7-question forward. `laya_health` shows the degraded state (`device: cpu`, `fallback_events: n`); restart the MCP server to get the GPU path back once VRAM frees up. Measured: 41.9 ms → 685.6 ms wall for the 7-question bench. |
 | `laya.load()` hangs (PyTorch path only) | `transformers` probes for TensorFlow at import and abseil can deadlock construction: run with `USE_TF=0`. |

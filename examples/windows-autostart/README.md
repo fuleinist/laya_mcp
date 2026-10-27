@@ -41,16 +41,16 @@ Measured cost: **~260 MiB VRAM resident** (Q8_0 on an RTX 3090), cold start ~2 s
   or `set LAYA_PORT=8132 & laya-stop.cmd`.
 - **Test without disturbing a live engine:** `set LAYA_PORT=8132` then run the `.cmd` directly.
 
-## macOS / Linux equivalent
+## Linux equivalent
 
-Same idea, one file instead of two:
+One file instead of two:
 
-```bash
-# ~/.config/systemd/user/laya.service  (or a LaunchAgent plist on macOS)
+```ini
+# ~/.config/systemd/user/laya.service
 [Unit]
 Description=Laya System-1 decision engine
 [Service]
-ExecStart=%h/ggmlc/laya serve %h/models/laya_multilingual_q8_0.gguf --port 8131 --device auto --cuda-graph
+ExecStart=%h/ggmlc/laya serve %h/models/laya_multilingual_q8_0.gguf --port 8131 --device auto
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -59,5 +59,14 @@ WantedBy=default.target
 ```bash
 systemctl --user enable --now laya.service
 ```
+
+`--cuda-graph` is absent on purpose. Add it when `--device` names a CUDA device. The server passes
+it only to a CUDA device, because ggmlc stops on a flag it does not know (see `LAYA_CUDA_GRAPH`
+in the main README).
+
+## macOS equivalent
+
+Use [`examples/macos-launchagent`](../macos-launchagent). It ships a real LaunchAgent plist for
+the arm64 Metal build, plus the `launchctl` commands and the log location.
 
 Again: optional. The MCP server does not read this endpoint.

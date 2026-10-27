@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Run a warm Laya engine at login on macOS.
+  Replace the four /Users/you paths with your own, then follow README.md.
+
+  No CUDA graph flag is passed, on purpose. This is a Metal build, and CUDA graph capture does
+  not exist on Metal. ggmlc stops on a flag it does not know.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.laya.serve</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/ggmlc/laya</string>
+    <string>serve</string>
+    <string>/Users/you/models/laya_multilingual_q8_0.gguf</string>
+    <string>--port</string>
+    <string>8131</string>
+    <string>--device</string>
+    <string>metal</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/laya-serve.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/laya-serve.log</string>
+</dict>
+</plist>
