@@ -15,7 +15,8 @@ pytest.importorskip("mcp", reason="the `mcp` package is required to import the s
 
 from laya_mcp_server import (  # noqa: E402
     EXE_PATH, MAX_BROWSER_ELEMENTS, MAX_QUESTIONS, MODEL_PATH, MODELS_DIR, PRESETS,
-    QUESTION_TYPES, TIMEOUT_MS, LayaDaemon, _browser_payload, _fmt, _fmt_browser, _payload,
+    QUESTION_TYPES, TIMEOUT_MS, LayaDaemon, _browser_payload, _cuda_graph_requested, _fmt,
+    _fmt_browser, _payload,
 )
 
 LIVE = bool((os.environ.get("LAYA_EXE") or os.environ.get("PATH")) and os.environ.get("LAYA_MODEL"))
@@ -746,11 +747,63 @@ def test_argv_follows_the_effective_device_and_drops_cuda_graph(monkeypatch):
     monkeypatch.setattr(srv, "MODEL_PATH", "/x/m.gguf")
     monkeypatch.setattr(srv, "MODELS_DIR", "")
     d = LayaDaemon()
-    d.device, d.cuda_graph = "auto", True
-    assert d._argv()[-2:] == ["--device", "auto"] or "--cuda-graph" in d._argv()
-    d.device = "cpu"
+    d.device, d.cuda_graph = "cpu", True
     argv = d._argv()
     assert "--cuda-graph" not in argv and argv[-2:] == ["--device", "cpu"]
+
+
+@pytest.mark.parametrize(("device", "platform", "expected"), [
+    ("cuda", "linux", True),
+    ("cuda:1", "win32", True),
+    ("auto", "win32", True),
+    ("auto", "linux", True),
+    ("auto", "darwin", False),
+    ("metal", "darwin", False),
+    ("metal", "linux", False),
+    ("cpu", "linux", False),
+])
+def test_cuda_graph_is_asked_for_only_where_it_can_mean_something(device, platform, expected):
+    """A CUDA graph is a CUDA concept. ggmlc hard-fails on an unknown flag, so this is not cosmetic."""
+    assert _cuda_graph_requested(device, platform) is expected
+
+
+def test_argv_withholds_cuda_graph_from_a_metal_device(monkeypatch):
+    """The default macOS configuration used to pass `--cuda-graph` to a Metal build."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "MODEL_PATH", "/x/m.gguf")
+    monkeypatch.setattr(srv, "MODELS_DIR", "")
+    d = LayaDaemon()
+    d.device, d.cuda_graph = "metal", True
+    argv = d._argv()
+    assert "--cuda-graph" not in argv
+    assert argv[-2:] == ["--device", "metal"]
+
+
+def test_argv_follows_the_platform_when_the_device_is_auto(monkeypatch):
+    """`auto` resolves to Metal on macOS and to CUDA on Windows; the flag must follow the platform."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "MODEL_PATH", "/x/m.gguf")
+    monkeypatch.setattr(srv, "MODELS_DIR", "")
+    d = LayaDaemon()
+    d.device, d.cuda_graph = "auto", True
+    monkeypatch.setattr(srv.sys, "platform", "darwin")
+    assert "--cuda-graph" not in d._argv()
+    monkeypatch.setattr(srv.sys, "platform", "win32")
+    assert d._argv()[-1] == "--cuda-graph"
+
+
+def test_check_note_names_the_reason_a_graph_was_not_requested(monkeypatch):
+    """`--check` must answer "did I ask for a graph, and if not, why" without reading the argv."""
+    import laya_mcp_server as srv
+
+    monkeypatch.setattr(srv, "CUDA_GRAPH", True)
+    assert srv._cuda_graph_note("cuda", "linux") == "requested"
+    assert "metal" in srv._cuda_graph_note("metal", "darwin")
+    assert "darwin" in srv._cuda_graph_note("auto", "darwin")
+    monkeypatch.setattr(srv, "CUDA_GRAPH", False)
+    assert "LAYA_CUDA_GRAPH=0" in srv._cuda_graph_note("cuda", "linux")
 
 
 def test_health_reports_the_degraded_state():

@@ -29,6 +29,9 @@ Environment
   LAYA_FAMILY      auto | english | multilingual | typed-decisions   (default: auto)
   LAYA_DEVICE      auto | cpu | cuda | metal                          (default: auto)
   LAYA_CUDA_GRAPH  "1" to capture a CUDA graph for the live shape     (default: 1)
+                   CUDA only: the flag is never passed to `metal`, and `auto` on macOS resolves
+                   to Metal, so the flag is withheld there too. The binary hard-fails on an
+                   unknown flag, so sending it to a Metal build risks a startup failure.
   LAYA_TIMEOUT_MS  per-call timeout in ms                             (default: 30000)
   LAYA_CPU_FALLBACK "1" to retry a timed-out call once on a fresh --device cpu daemon and stay
                    on CPU afterwards (a timeout nearly always means VRAM starvation by another
@@ -300,6 +303,36 @@ def _shape_browser(goal: str = "", elements: list | None = None, page_text: str 
             "text_fields": len(text_fields or []), "rules": bool(rules)}
 
 
+def _cuda_graph_requested(device: str, platform_name: str | None = None) -> bool:
+    """Whether `--cuda-graph` can mean anything for this device on this platform.
+
+    CUDA graph capture is a CUDA concept. The ggmlc binary hard-fails on an unknown flag
+    (measured: `--nonsense-flag` returns rc=1), so an unsupported flag is not a no-op - it is a
+    startup failure. `metal` is an advertised device and `auto` resolves to Metal on macOS, so
+    both must not receive the flag. `auto` keeps the flag on Windows and Linux, where it resolves
+    to CUDA or CPU; that is the shipped behaviour and it must not change.
+    """
+    if device.startswith("cuda"):
+        return True
+    return device == "auto" and (platform_name or sys.platform) != "darwin"
+
+
+def _cuda_graph_note(device: str, platform_name: str | None = None) -> str:
+    """The `--check` sentence: did this configuration ask for a CUDA graph, and if not, why.
+
+    The server cannot see what `auto` resolved to inside the engine, so this reports the request,
+    never a resolved backend.
+    """
+    if not CUDA_GRAPH:
+        return "not requested (LAYA_CUDA_GRAPH=0)"
+    platform_name = platform_name or sys.platform
+    if _cuda_graph_requested(device, platform_name):
+        return "requested"
+    if device == "auto":
+        return f"not requested (auto resolves to Metal on {platform_name!r})"
+    return f"not requested (device {device!r} is not CUDA)"
+
+
 class LayaDaemon:
     """Serialized client for `laya daemon` (strict request/response FIFO).
 
@@ -336,7 +369,8 @@ class LayaDaemon:
         if FAMILY and FAMILY != "auto":
             argv += ["--family", FAMILY]
         argv += ["--device", self.device]
-        if self.cuda_graph and self.device != "cpu":  # a graph captured for CUDA is meaningless here
+        # CUDA graph capture is CUDA-only, and an unsupported flag fails the whole startup.
+        if self.cuda_graph and _cuda_graph_requested(self.device):
             argv += ["--cuda-graph"]
         return argv
 
@@ -963,9 +997,12 @@ def _check() -> int:
     rows = (("LAYA_EXE", EXE_PATH), ("LAYA_MODEL", MODEL_PATH), ("LAYA_MODELS_DIR", MODELS_DIR),
             ("LAYA_FAMILY", FAMILY), ("LAYA_DEVICE", DEVICE),
             ("LAYA_CUDA_GRAPH", "1" if CUDA_GRAPH else "0"), ("LAYA_TIMEOUT_MS", TIMEOUT_MS),
-            ("LAYA_USAGE_LOG", USAGE_LOG or "off"))
+            ("LAYA_USAGE_LOG", USAGE_LOG or "off"),
+            ("cuda graph", _cuda_graph_note(DEVICE)))
     for name, value in rows:
-        print(f"  {name:16s} = {value!r}")
+        # The note is a sentence, the rest are bare values; only repr the bare values.
+        shown = value if name == "cuda graph" else repr(value)
+        print(f"  {name:16s} = {shown}")
     problem = DAEMON._config_error()
     if problem:
         print(f"\nFAILED: {problem}", file=sys.stderr)
